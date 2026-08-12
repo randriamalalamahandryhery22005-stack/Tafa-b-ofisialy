@@ -531,11 +531,6 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   state.current=user.id;
   ownerId=user.id;
 
-  // Do not query profiles before publishing. The posts INSERT is authorized by
-  // the authenticated user's auth.uid() and posts.user_id foreign key.
-  // A profile SELECT here can be blocked by profiles RLS and would prevent
-  // an otherwise valid publication.
-
   if(visibility==="Sélection personnalisée") {
     throw new Error("La visibilité personnalisée n'est pas encore disponible.");
   }
@@ -558,34 +553,24 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   }
 
   const id=crypto.randomUUID();
-  const basePayload={
+  const payload={
     id,
     owner_id: ownerId,
     title: "Publication",
+    text: String(text||""),
     media_url: media_url || null,
     media_type,
     visibility: postVisibilityToDb(visibility)
   };
 
-  // The deployed database reports that `posts.text` does not exist.
-  // Try the canonical current field `content`, then the legacy `text`
-  // only if the live schema explicitly asks for it.
-  const textValue=String(text||"");
-  let payload={...basePayload,content:textValue};
-  let result=await SB.from("posts").insert(payload);
-
-  if(result.error && /column .*content.*does not exist|could not find the 'content' column|schema cache/i.test(result.error.message||"")){
-    payload={...basePayload,text:textValue};
-    result=await SB.from("posts").insert(payload);
-  }
-
-  const error=result.error;
+  const {error}=await SB.from("posts").insert(payload);
   if(error){
     if(uploadedPath){
       try{ await SB.storage.from("posts").remove([uploadedPath]); }catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
     }
     const msg=[error.message,error.details,error.hint].filter(Boolean).join(" — ");
-    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par les règles de sécurité Supabase (RLS). "+msg);
+    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par Supabase (RLS). Exécutez PUBLICATIONS_V4_SCHEMA_FIX.sql puis réessayez.");
+    if(/column .*owner_id|column .*text|schema cache/i.test(msg)) throw new Error("Le schéma de la table posts n'est pas encore synchronisé. Exécutez PUBLICATIONS_V4_SCHEMA_FIX.sql dans Supabase.");
     if(/foreign key|profiles/i.test(msg)) throw new Error("Le profil Supabase de ce compte est introuvable. "+msg);
     throw new Error(msg||"Erreur Supabase lors de la publication.");
   }
@@ -593,15 +578,14 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   return {
     id,
     user_id: ownerId,
-    content: textValue,
-    media_url: payload.media_url || "",
-    media_type: payload.media_type,
-    visibility: payload.visibility,
+    content: String(text||""),
+    media_url: media_url || "",
+    media_type,
+    visibility: postVisibilityToDb(visibility),
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
 }
-
 async function signOutSupabase(){
   if(supabaseReady()){
     const {error}=await SB.auth.signOut();
