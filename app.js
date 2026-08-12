@@ -78,12 +78,16 @@ async function loadSupabaseMessages(){
   }catch(e){console.warn('Supabase messages:',e.message||e)}
 }
 async function persistConversation(c){
-  if(!supabaseReady()||!c?.id||!c.members?.length) return;
-  try{await SB.from('conversations').upsert({id:c.id,type:c.type||'private',members:c.members,name:c.name||''},{onConflict:'id'});}catch(e){console.warn('Conversation persist:',e.message||e)}
+  if(!supabaseReady()||!c?.id||!c.members?.length) throw new Error('Conversation invalide.');
+  const {error}=await SB.from('conversations').upsert({id:c.id,type:c.type||'private',members:c.members,name:c.name||''},{onConflict:'id'});
+  if(error) throw error;
+  return c;
 }
 async function persistMessage(m){
-  if(!supabaseReady()||!m?.id) return;
-  try{await SB.from('messages').insert({id:m.id,conversation_id:m.conversationId,sender_id:m.from,recipient_id:m.to,text:m.text||'',is_read:false});}catch(e){console.warn('Message persist:',e.message||e)}
+  if(!supabaseReady()||!m?.id) throw new Error('Message invalide.');
+  const {error}=await SB.from('messages').insert({id:m.id,conversation_id:m.conversationId,sender_id:m.from,recipient_id:m.to,text:m.text||'',is_read:false});
+  if(error) throw error;
+  return m;
 }
 
 
@@ -407,7 +411,7 @@ async function loadSupabasePosts(){
     .limit(200);
   if(error){ console.error("Supabase posts:",error); return; }
 
-  const ownerIds=[...new Set((data||[]).map(r=>r.user_id).filter(Boolean))];
+  const ownerIds=[...new Set((data||[]).map(r=>r.owner_id || r.user_id).filter(Boolean))];
   if(ownerIds.length){
     const {data:profiles}=await SB.from("profiles").select("*").in("id",ownerIds);
     const map=new Map(state.users.map(u=>[u.id,u]));
@@ -415,14 +419,14 @@ async function loadSupabasePosts(){
     state.users=[...map.values()];
   }
 
-  const visibilityFromDb=v=>({public:"Public",friends:"Amis",private:"Moi uniquement"}[String(v||"").toLowerCase()] || (v||"Public"));
+  const visibilityFromDb=v=>({public:"Public",friends:"Amis",private:"Moi uniquement","public":"Public","friends":"Amis","private":"Moi uniquement",Public:"Public",Amis:"Amis","Moi uniquement":"Moi uniquement"}[String(v||"")] || (v||"Public"));
   state.posts=(data||[]).map(row=>({
-    id:row.id, ownerId:row.user_id, ownerType:"user",
-    title:"Publication", text:row.content||"",
+    id:row.id, ownerId:row.owner_id || row.user_id, ownerType:"user",
+    title:row.title||"Publication", text:row.text ?? row.content ?? "",
     media:row.media_url||"", mediaType:(row.media_type==="video"?"reel":(row.media_type||"text")),
     visibility:visibilityFromDb(row.visibility),
     allowedUsers:[], tags:[],
-    createdAt:row.created_at, editedAt:row.updated_at,
+    createdAt:row.created_at, editedAt:row.edited_at || row.updated_at,
     shares:Number(row.shares||0), reactions:{}, myReaction:{}
   }));
 
@@ -481,11 +485,15 @@ async function uploadPostMedia(file){
   return {url:data?.publicUrl||"",path};
 }
 function postVisibilityToDb(value){
+  // Canonical Tafaß database values (legacy installations use these labels).
   return ({
-    "Public":"public",
-    "Amis":"friends",
-    "Moi uniquement":"private"
-  }[value] || String(value||"public").toLowerCase());
+    "Public":"Public",
+    "Amis":"Amis",
+    "Moi uniquement":"Moi uniquement",
+    public:"Public",
+    friends:"Amis",
+    private:"Moi uniquement"
+  }[value] || "Public");
 }
 async function createSupabasePost({text,file,visibility,kind,ownerId=state.current}){
   if(!supabaseReady()) throw new Error("Supabase non disponible.");
@@ -526,8 +534,9 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   const id=crypto.randomUUID();
   const payload={
     id,
-    user_id: ownerId,
-    content: String(text||""),
+    owner_id: ownerId,
+    title: "Publication",
+    text: String(text||""),
     media_url: media_url || null,
     media_type,
     visibility: postVisibilityToDb(visibility)
@@ -749,13 +758,21 @@ function modal(title,body,buttons=""){
   $("modalRoot").querySelectorAll("[data-close-modal]").forEach(el=>el.onclick=()=>closeModal());
 }
 function closeModal(){ $("modalRoot").innerHTML=""; }
-function notify(userId,type,text,entityId=null){
-  if(!userId)return;
+async function notify(userId,type,text,entityId=null){
+  if(!userId || userId===state.current)return null;
   const n={id:crypto.randomUUID(),userId,type,text,entityId,read:false,createdAt:new Date().toISOString()};
   state.notifications.unshift(n); save();
   if(supabaseReady() && state.current){
-    SB.from('notifications').insert({id:n.id,recipient_id:userId,actor_id:state.current,type,title:'Tafaß',message:text,entity_type:'',entity_id:entityId,is_read:false}).then(({error})=>{if(error)console.warn('Notification persist:',error.message)});
+    try{
+      const {error}=await SB.rpc('tafa_create_notification',{
+        p_recipient_id:userId,p_type:type,p_title:'Tafaß',p_message:text,p_entity_type:'',p_entity_id:entityId
+      });
+      if(error) throw error;
+    }catch(error){
+      console.warn('Notification persist:',error.message||error);
+    }
   }
+  return n;
 }
 function routeTo(r, options={}){
   const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
@@ -1799,7 +1816,7 @@ function editPost(id){
  const p=state.posts.find(x=>x.id===id); if(!p||p.ownerId!==state.current)return;
  modal("Modifier la publication",`<form id="editPostForm" class="premium-form"><label>Texte<textarea id="editPostText">${esc(p.text||"")}</textarea></label><label>Visibilité<select id="editPostVisibility"><option ${p.visibility==="Public"?"selected":""}>Public</option><option ${p.visibility==="Amis"?"selected":""}>Amis</option><option ${p.visibility==="Sélection personnalisée"?"selected":""}>Sélection personnalisée</option><option ${p.visibility==="Moi uniquement"?"selected":""}>Moi uniquement</option></select></label><button class="btn primary wide">Enregistrer</button></form>`);
  $("editPostForm").onsubmit=async e=>{e.preventDefault();p.text=$("editPostText").value.trim();p.visibility=$("editPostVisibility").value;p.editedAt=new Date().toISOString();
-   if(supabaseReady()){const {error}=await SB.from("posts").update({content:p.text,visibility:postVisibilityToDb(p.visibility),updated_at:p.editedAt}).eq("id",p.id).eq("user_id",state.current);if(error)return toast("Modification impossible");}
+   if(supabaseReady()){const {error}=await SB.from("posts").update({text:p.text,visibility:postVisibilityToDb(p.visibility),edited_at:p.editedAt}).eq("id",p.id).eq("owner_id",state.current);if(error)return toast("Modification impossible : "+(error.message||"Supabase"));}
    save();closeModal();render();toast("Publication modifiée");};
 }
 function postMore(id){
@@ -1844,15 +1861,28 @@ function newConversation(){
   modal("Nouveau message",`<form id="newConvForm"><label>Destinataire<select id="newConvUser" required>${people}</select></label><label>Premier message<textarea id="newConvText"></textarea></label><div class="actions"><button type="button" class="btn secondary" data-action="createGroup">＋ Groupe</button><button class="btn primary">Créer la conversation</button></div></form>`);
   $("newConvForm").onsubmit=e=>{e.preventDefault();startConversation($("newConvUser").value);setTimeout(()=>{const c=state.conversations.find(c=>c.id===activeConversation);if($("newConvText").value.trim())sendMessage(c.id,$("newConvText").value.trim());closeModal();render();},0);};
 }
-function sendMessage(convId,text,fileOrFiles){
+async function sendMessage(convId,text,fileOrFiles){
   const c=state.conversations.find(x=>x.id===convId);
+  if(!c || !state.current) return;
   const to=c?.members?.find(x=>x!==state.current)||null;
   let files=[];
   if(Array.isArray(fileOrFiles)) files=fileOrFiles.filter(Boolean).map(f=>Object.assign({id:uid("mf")},f));
   else if(fileOrFiles) files=[Object.assign({id:uid("mf")},fileOrFiles)];
   const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text,files,file:files[0]||null,read:false,createdAt:new Date().toISOString()};
-  state.messages.push(m); save(); persistConversation(c); persistMessage(m);
-  if(to)notify(to,"message",`${displayName(me())} vous a envoyé un message.`);
+  // Persist the conversation first so the messages FK can never race it.
+  if(supabaseReady()){
+    try{
+      await persistConversation(c);
+      await persistMessage(m);
+      await loadSupabaseMessages();
+    }catch(error){
+      console.error('sendMessage:',error);
+      toast('Message impossible : '+(error.message||'erreur Supabase'));
+      return;
+    }
+  }
+  if(!supabaseReady()){ state.messages.push(m); save(); }
+  if(to) await notify(to,"message",`${displayName(me())} vous a envoyé un message.`);
   render();
 }
 function voiceCall(id){modal("Appel vocal",`<div class="empty"><div class="empty-icon">☎</div><b>Appel simulé</b><p>L'interface est prête. Pour un appel réel, branchez WebRTC + signalisation backend.</p><button class="btn primary" data-action="closeModal">Terminer</button></div>`);}
