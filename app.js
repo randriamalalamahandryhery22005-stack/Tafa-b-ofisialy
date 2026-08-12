@@ -54,7 +54,7 @@ async function startTafaRealtime(){
     ['comments','comment-change',()=>refreshRealtimePosts()],
     ['friend_requests','friend-request-change',()=>refreshRealtimeFriends()],
     ['friendships','friendship-change',()=>refreshRealtimeFriends()],
-    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render),`recipient_id=eq.${uid}`],
+    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render)],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)]
   ];
@@ -92,7 +92,7 @@ async function loadSupabaseMessages(){
 }
 async function persistConversation(c){
   if(!supabaseReady()||!c?.id||!c.members?.length) throw new Error('Conversation invalide.');
-  const {error}=await SB.from('conversations').upsert({id:c.id,type:c.type||'private',members:c.members,name:c.name||''},{onConflict:'id'});
+  const {error}=await SB.from('conversations').upsert({id:c.id,type:c.type||'private',members:c.members},{onConflict:'id'});
   if(error) throw error;
   return c;
 }
@@ -782,7 +782,17 @@ async function notify(userId,type,text,entityId=null){
       });
       if(error) throw error;
     }catch(error){
-      console.warn('Notification persist:',error.message||error);
+      console.warn('Notification RPC persist:',error.message||error);
+      // Fallback direct insert for installations where the RPC is stale.
+      try{
+        const {error:insertError}=await SB.from('notifications').insert({
+          recipient_id:userId,actor_id:state.current,type:type||'activity',
+          title:'Tafaß',message:text,entity_type:'',entity_id:entityId,is_read:false
+        });
+        if(insertError) console.warn('Notification direct persist:',insertError.message||insertError);
+      }catch(fallbackError){
+        console.warn('Notification fallback:',fallbackError.message||fallbackError);
+      }
     }
   }
   return n;
@@ -1876,7 +1886,7 @@ function toggleFollow(id){if(id===state.current)return;const i=state.follows.fin
 function togglePageFollow(id){const p=findPage(id);if(!p)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0){state.follows.splice(i,1);p.followers=Math.max(0,(p.followers||0)-1);}else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});p.followers=(p.followers||0)+1;notify(p.ownerId,"follow",`${displayName(me())} suit votre Page.`);}save();render();}
 function startConversation(id){
   let c=state.conversations.find(c=>c.type==="private"&&c.members.includes(state.current)&&c.members.includes(id));
-  if(!c){c={id:crypto.randomUUID(),type:"private",members:[state.current,id],name:"",createdAt:new Date().toISOString()};state.conversations.push(c);save();persistConversation(c);}
+  if(!c){c={id:crypto.randomUUID(),type:"private",members:[state.current,id],createdAt:new Date().toISOString()};state.conversations.push(c);save();persistConversation(c);}
   activeConversation=c.id;routeTo("messages");
 }
 function newConversation(){
