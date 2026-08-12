@@ -657,7 +657,11 @@ function me(){ return state.users.find(u=>u.id===state.current) || null; }
 function findUser(id){ return state.users.find(u=>u.id===id); }
 function findPage(id){ return state.pages.find(p=>p.id===id); }
 function displayName(entity){ return entity?.name || [entity?.firstName,entity?.lastName].filter(Boolean).join(" ") || "Utilisateur"; }
-function avatar(entity, cls="avatar"){ return `<span class="${cls}">${entity?.avatar?`<img src="${esc(entity.avatar)}" alt="">`:esc((displayName(entity)[0]||"T").toUpperCase())}</span>`; }
+const DEFAULT_AVATAR_SVG = `assets/default-avatar.svg`;
+function avatar(entity, cls="avatar"){
+  const src = entity?.avatar || DEFAULT_AVATAR_SVG;
+  return `<span class="${cls}"><img src="${src}" alt="${esc(displayName(entity)||"Utilisateur")}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_AVATAR_SVG}'"></span>`;
+}
 function verified(entity){ return entity?.verified ? `<span class="verified-badge">Compte vérifié</span>` : ""; }
 function typePill(entity){ return `<span class="type-pill">${entity?.type==="page"?"PAGE":"COMPTE"}</span>`; }
 function timeAgo(ts){ const d=Date.now()-new Date(ts).getTime(),m=Math.floor(d/60000),h=Math.floor(m/60),day=Math.floor(h/24); if(m<1)return"à l'instant";if(m<60)return`il y a ${m} min`;if(h<24)return`il y a ${h} h`;if(day<7)return`il y a ${day} j`;return new Date(ts).toLocaleDateString("fr-FR"); }

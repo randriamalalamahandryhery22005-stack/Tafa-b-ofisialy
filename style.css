@@ -2950,3 +2950,19 @@ button,input,textarea,select{font-family:inherit}
   object-fit:cover;
   background:#080b12;
 }
+
+/* V17 mobile polish: visual only; no application logic changed */
+*,*::before,*::after{box-sizing:border-box}
+html,body{width:100%;max-width:100%;overflow-x:hidden}
+body{margin:0;overscroll-behavior-x:none}
+img,video,svg{max-width:100%}
+.splash-logo-circle img,.brand-logo img{width:78%;height:78%;object-fit:contain;display:block;margin:auto}
+.brand-logo{display:grid;place-items:center;overflow:hidden}
+.avatar img{width:100%;height:100%;display:block;object-fit:cover;border-radius:inherit}
+@media(max-width:600px){
+  .app-shell,.main-shell,.page-shell,.content-shell{width:100%;max-width:100%;min-width:0}
+  .profile-single-content,.profile-only-panel,.social-profile,.messages-premium,.notifications-premium{max-width:100%;min-width:0}
+  button,input,textarea,select{max-width:100%}
+  .profile-tabs-premium{overflow-x:auto;scrollbar-width:none}
+  .profile-tabs-premium::-webkit-scrollbar{display:none}
+}
