@@ -1,0 +1,2222 @@
+(() => {
+"use strict";
+
+/* ============================================================
+   TAFAß — SUPABASE AUTH CONNECTED
+   - Authentification réelle via Supabase Auth.
+   - Session persistante gérée par Supabase.
+   - Profils chargés depuis la table profiles.
+   - Les mots de passe ne sont jamais stockés dans localStorage.
+   - Les fonctionnalités sociales seront reliées à Supabase dans les étapes suivantes.
+   ============================================================ */
+
+
+/* ============================================================
+   TAFAß — SUPABASE AUTH
+   Authentification réelle : Supabase Auth + table profiles.
+   Les mots de passe ne sont jamais stockés dans localStorage.
+============================================================ */
+const SB = window.supabaseClient;
+
+function supabaseReady(){
+  return !!(SB && SB.auth);
+}
+
+/* ============================================================
+   TAFAß — SUPABASE FRIENDS / INVITATIONS + PROFILES
+   Source de vérité: friend_requests + friendships
+============================================================ */
+function mergeUsersFromProfiles(rows){
+  const map=new Map(state.users.map(u=>[u.id,u]));
+  (rows||[]).forEach(p=>map.set(p.id,profileFromRow(p)));
+  state.users=[...map.values()];
+}
+
+async function loadSupabaseProfiles(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const {data,error}=await SB.from("profiles")
+      .select("*")
+      .order("created_at",{ascending:false});
+    if(error) throw error;
+    mergeUsersFromProfiles(data||[]);
+    save();
+  }catch(err){
+    console.error("Supabase profiles:",err);
+  }
+}
+
+async function loadSupabaseProfileById(id){
+  if(!supabaseReady() || !id) return null;
+  try{
+    const {data,error}=await SB.from("profiles").select("*").eq("id",id).maybeSingle();
+    if(error) throw error;
+    if(data){
+      mergeUsersFromProfiles([data]);
+      save();
+      return profileFromRow(data);
+    }
+  }catch(err){
+    console.error("Supabase profile by id:",err);
+  }
+  return null;
+}
+
+async function loadSupabaseFriends(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const [reqRes,shipRes]=await Promise.all([
+      SB.from("friend_requests")
+        .select("id,sender_id,receiver_id,status,created_at,responded_at")
+        .or(`sender_id.eq.${state.current},receiver_id.eq.${state.current}`)
+        .order("created_at",{ascending:false}),
+      SB.from("friendships")
+        .select("id,user_id,friend_id,created_at")
+        .or(`user_id.eq.${state.current},friend_id.eq.${state.current}`)
+        .order("created_at",{ascending:false})
+    ]);
+
+    if(reqRes.error) throw reqRes.error;
+    if(shipRes.error) throw shipRes.error;
+
+    state.friendRequests=(reqRes.data||[]).map(r=>({
+      id:r.id, from:r.sender_id, to:r.receiver_id,
+      status:r.status, createdAt:r.created_at, respondedAt:r.responded_at
+    }));
+
+    state.friendships=(shipRes.data||[]).map(f=>({
+      id:f.id, a:f.user_id, b:f.friend_id, createdAt:f.created_at
+    }));
+
+    const ids=new Set();
+    state.friendRequests.forEach(r=>{
+      if(r.from!==state.current)ids.add(r.from);
+      if(r.to!==state.current)ids.add(r.to);
+    });
+    state.friendships.forEach(f=>{
+      if(f.a!==state.current)ids.add(f.a);
+      if(f.b!==state.current)ids.add(f.b);
+    });
+
+    if(ids.size){
+      const {data,error}=await SB.from("profiles").select("*").in("id",[...ids]);
+      if(!error) mergeUsersFromProfiles(data||[]);
+    }
+
+    save();
+  }catch(err){
+    console.error("Supabase friends:",err);
+  }
+}
+
+function friendRequestBetween(a,b){
+  return state.friendRequests.find(r=>
+    ((r.from===a&&r.to===b)||(r.from===b&&r.to===a))
+    && r.status==="pending"
+  ) || null;
+}
+
+function outgoingFriendRequest(id){
+  return state.friendRequests.find(r=>
+    r.from===state.current && r.to===id && r.status==="pending"
+  ) || null;
+}
+
+function incomingFriendRequest(id){
+  return state.friendRequests.find(r=>
+    r.from===id && r.to===state.current && r.status==="pending"
+  ) || null;
+}
+
+function friendActionState(id){
+  if(isFriend(id)) return "friends";
+  if(outgoingFriendRequest(id)) return "sent";
+  if(incomingFriendRequest(id)) return "received";
+  return "none";
+}
+
+async function sendFriend(id){
+  if(!supabaseReady() || !state.current) return toast("Session Supabase introuvable");
+  if(!id || id===state.current) return;
+  if(isFriend(id)) return toast("Vous êtes déjà amis.");
+
+  const existing=friendRequestBetween(state.current,id);
+  if(existing){
+    if(existing.from===id && existing.to===state.current){
+      return toast("Cette personne vous a déjà envoyé une invitation.");
+    }
+    if(existing.from===state.current){
+      return toast("Invitation déjà envoyée.");
+    }
+  }
+
+  try{
+    const {data,error}=await SB.from("friend_requests")
+      .insert({
+        sender_id:state.current,
+        receiver_id:id,
+        status:"pending"
+      })
+      .select("id,sender_id,receiver_id,status,created_at,responded_at")
+      .single();
+
+    if(error) throw error;
+
+    state.friendRequests.unshift({
+      id:data.id,from:data.sender_id,to:data.receiver_id,
+      status:data.status,createdAt:data.created_at,respondedAt:data.responded_at
+    });
+
+    // Notification locale pour l'utilisateur courant; la notification
+    // persistante côté destinataire sera ajoutée avec le système notifications.
+    save();
+    render();
+    toast("Invitation envoyée.");
+  }catch(err){
+    console.error("sendFriend:",err);
+    if(err.code==="23505") toast("Une invitation existe déjà.");
+    else toast("Impossible d'envoyer l'invitation : "+(err.message||"erreur Supabase"));
+  }
+}
+
+async function acceptFriend(id){
+  if(!supabaseReady() || !state.current) return toast("Session Supabase introuvable");
+  const r=state.friendRequests.find(x=>x.id===id);
+  if(!r || r.to!==state.current || r.status!=="pending") return;
+
+  try{
+    const {error:updateError}=await SB.from("friend_requests")
+      .update({status:"accepted",responded_at:new Date().toISOString()})
+      .eq("id",id)
+      .eq("receiver_id",state.current)
+      .eq("status","pending");
+    if(updateError) throw updateError;
+
+    // Une seule ligne suffit: elle est visible aux deux côtés via RLS.
+    const {data:friendship,error:friendshipError}=await SB.from("friendships")
+      .insert({user_id:state.current,friend_id:r.from})
+      .select("id,user_id,friend_id,created_at")
+      .single();
+    if(friendshipError && friendshipError.code!=="23505") throw friendshipError;
+
+    r.status="accepted";
+    r.respondedAt=new Date().toISOString();
+
+    if(friendship){
+      state.friendships.push({
+        id:friendship.id,a:friendship.user_id,b:friendship.friend_id,
+        createdAt:friendship.created_at
+      });
+    }else{
+      await loadSupabaseFriends();
+    }
+
+    save();
+    render();
+    toast("Invitation acceptée.");
+  }catch(err){
+    console.error("acceptFriend:",err);
+    toast("Impossible d'accepter l'invitation : "+(err.message||"erreur Supabase"));
+  }
+}
+
+async function declineFriend(id){
+  if(!supabaseReady() || !state.current) return;
+  const r=state.friendRequests.find(x=>x.id===id);
+  if(!r || (r.to!==state.current && r.from!==state.current) || r.status!=="pending") return;
+
+  try{
+    const newStatus=r.from===state.current ? "cancelled" : "declined";
+    const {error}=await SB.from("friend_requests")
+      .update({status:newStatus,responded_at:new Date().toISOString()})
+      .eq("id",id)
+      .eq("status","pending");
+    if(error) throw error;
+
+    r.status=newStatus;
+    r.respondedAt=new Date().toISOString();
+    save();
+    render();
+    toast(newStatus==="cancelled"?"Invitation annulée.":"Invitation refusée.");
+  }catch(err){
+    console.error("declineFriend:",err);
+    toast("Action impossible : "+(err.message||"erreur Supabase"));
+  }
+}
+
+async function removeFriend(id){
+  if(!supabaseReady() || !state.current) return;
+  const f=state.friendships.find(x=>
+    (x.a===state.current&&x.b===id)||(x.b===state.current&&x.a===id)
+  );
+  if(!f)return;
+
+  try{
+    const {error}=await SB.from("friendships")
+      .delete()
+      .eq("id",f.id);
+    if(error) throw error;
+    state.friendships=state.friendships.filter(x=>x.id!==f.id);
+    save();
+    render();
+    toast("Ami supprimé.");
+  }catch(err){
+    console.error("removeFriend:",err);
+    toast("Impossible de supprimer cet ami : "+(err.message||"erreur Supabase"));
+  }
+}
+
+
+function profileFromRow(p){
+  if(!p) return null;
+  return {
+    id:p.id,
+    firstName:p.first_name || "",
+    lastName:p.last_name || "",
+    name:[p.first_name,p.last_name].filter(Boolean).join(" ") || p.username || "Utilisateur",
+    birth:p.birth || "",
+    gender:p.gender || "",
+    username:p.username || "",
+    country:p.country || "Madagascar",
+    code:p.phone_code || "",
+    phone:p.phone || "",
+    email:p.email || "",
+    avatar:p.avatar_url || "",
+    cover:p.cover_url || "",
+    bio:p.bio || "",
+    pseudo:p.pseudo || "",
+    relationshipStatus:p.relationship_status || "",
+    privacy:p.privacy || {},
+    location:p.location || p.country || "",
+    type:p.type || "account",
+    verified:!!p.verified,
+    createdAt:p.created_at ? String(p.created_at).slice(0,10) : "",
+    followers:p.followers || 0,
+    following:p.following || 0,
+    friends:p.friends || 0
+  };
+}
+
+async function hydrateSupabaseSession(){
+  if(!supabaseReady()) return false;
+  const {data:{session},error} = await SB.auth.getSession();
+  if(error) console.error("Supabase session:",error);
+  if(!session){
+    state.current=null;
+    state.users=[];
+    save();
+    return false;
+  }
+  const {data:profile,error:profileError}=await SB
+    .from("profiles")
+    .select("*")
+    .eq("id",session.user.id)
+    .maybeSingle();
+  if(profileError) console.error("Supabase profile:",profileError);
+  const u=profileFromRow(profile) || profileFromRow({
+    id:session.user.id,
+    email:session.user.email
+  });
+  state.users=[u];
+  state.current=u.id;
+
+  // IMPORTANT: load every public profile so Recherche can find accounts
+  // that are not friends and have no posts yet.
+  await loadSupabaseProfiles();
+  await loadSupabasePosts();
+  await loadSupabaseFriends();
+  save();
+  return true;
+}
+
+
+async function loadSupabasePosts(){
+  if(!supabaseReady() || !state.current) return;
+  const {data,error}=await SB.from("posts")
+    .select("*")
+    .order("created_at",{ascending:false})
+    .limit(200);
+  if(error){ console.error("Supabase posts:",error); return; }
+
+  const ownerIds=[...new Set((data||[]).map(r=>r.user_id).filter(Boolean))];
+  if(ownerIds.length){
+    const {data:profiles}=await SB.from("profiles").select("*").in("id",ownerIds);
+    const map=new Map(state.users.map(u=>[u.id,u]));
+    (profiles||[]).forEach(profile=>map.set(profile.id,profileFromRow(profile)));
+    state.users=[...map.values()];
+  }
+
+  const visibilityFromDb=v=>({public:"Public",friends:"Amis",private:"Moi uniquement"}[String(v||"").toLowerCase()] || (v||"Public"));
+  state.posts=(data||[]).map(row=>({
+    id:row.id, ownerId:row.user_id, ownerType:"user",
+    title:"Publication", text:row.content||"",
+    media:row.media_url||"", mediaType:(row.media_type==="video"?"reel":(row.media_type||"text")),
+    visibility:visibilityFromDb(row.visibility),
+    allowedUsers:[], tags:[],
+    createdAt:row.created_at, editedAt:row.updated_at,
+    shares:Number(row.shares||0), reactions:{}, myReaction:{}
+  }));
+
+  const {data:rx,error:rxErr}=await SB.from("post_reactions").select("post_id,user_id,reaction_type");
+  if(!rxErr) (rx||[]).forEach(r=>{
+    const p=state.posts.find(x=>x.id===r.post_id); if(!p)return;
+    p.reactions[r.reaction_type]=(p.reactions[r.reaction_type]||0)+1;
+    if(r.user_id===state.current)p.myReaction[state.current]=r.reaction_type;
+  });
+
+  const {data:cm,error:cmErr}=await SB.from("comments").select("*").order("created_at",{ascending:true});
+  if(!cmErr) {
+    state.comments=(cm||[]).map(c=>({
+      id:c.id,postId:c.post_id,parentId:c.parent_id,userId:c.user_id,text:(c.text ?? c.content ?? c.body ?? ""),
+      createdAt:c.created_at,editedAt:c.edited_at,likes:{}
+    }));
+    const commentUserIds=[...new Set((cm||[]).map(c=>c.user_id).filter(Boolean))];
+    if(commentUserIds.length){
+      const {data:commentProfiles}=await SB.from("profiles").select("*").in("id",commentUserIds);
+      const map=new Map(state.users.map(u=>[u.id,u]));
+      (commentProfiles||[]).forEach(profile=>map.set(profile.id,profileFromRow(profile)));
+      state.users=[...map.values()];
+    }
+  }
+
+  // Shares are stored on public.posts.shares in the existing Tafa database.
+  // Do not depend on a separate post_shares table here.
+}
+
+async function uploadPostMedia(file){
+  if(!file || !supabaseReady() || !state.current) return null;
+
+  const type=String(file.type||"").toLowerCase();
+  const isImage=type.startsWith("image/");
+  const isVideo=type.startsWith("video/");
+  const maxSize=isImage ? 15*1024*1024 : isVideo ? 100*1024*1024 : 20*1024*1024;
+
+  if(!isImage && !isVideo){
+    throw new Error("Seuls les fichiers image et vidéo sont autorisés pour Photo, Vidéo et Reel.");
+  }
+  if(file.size>maxSize){
+    throw new Error(`Fichier trop volumineux. Maximum: ${isImage?"15 Mo":"100 Mo"}.`);
+  }
+
+  const ext=(file.name.split(".").pop()||"bin").toLowerCase().replace(/[^a-z0-9]/g,"")||"bin";
+  const path=`${state.current}/${crypto.randomUUID()}.${ext}`;
+
+  const {error}=await SB.storage.from("posts").upload(path,file,{
+    contentType:type || undefined,
+    upsert:false,
+    cacheControl:"3600"
+  });
+  if(error) throw error;
+
+  const {data}=SB.storage.from("posts").getPublicUrl(path);
+  return {url:data?.publicUrl||"",path};
+}
+function postVisibilityToDb(value){
+  return ({
+    "Public":"public",
+    "Amis":"friends",
+    "Moi uniquement":"private"
+  }[value] || String(value||"public").toLowerCase());
+}
+async function createSupabasePost({text,file,visibility,kind,ownerId=state.current}){
+  if(!supabaseReady()) throw new Error("Supabase non disponible.");
+
+  const {data:{user},error:userError}=await SB.auth.getUser();
+  if(userError) throw userError;
+  if(!user?.id) throw new Error("Session Supabase introuvable. Reconnectez-vous.");
+
+  state.current=user.id;
+  ownerId=user.id;
+
+  // Do not query profiles before publishing. The posts INSERT is authorized by
+  // the authenticated user's auth.uid() and posts.user_id foreign key.
+  // A profile SELECT here can be blocked by profiles RLS and would prevent
+  // an otherwise valid publication.
+
+  if(visibility==="Sélection personnalisée") {
+    throw new Error("La visibilité personnalisée n'est pas encore disponible.");
+  }
+
+  let media_url="", media_type="text", uploadedPath=null;
+  if(file){
+    const uploaded=await uploadPostMedia(file);
+    media_url=uploaded?.url||"";
+    uploadedPath=uploaded?.path||null;
+
+    const fileIsVideo=String(file.type||"").toLowerCase().startsWith("video/");
+    const fileIsImage=String(file.type||"").toLowerCase().startsWith("image/");
+
+    if(kind==="photo" && !fileIsImage) throw new Error("Le mode Photo nécessite une image.");
+    if((kind==="video" || kind==="reel") && !fileIsVideo) throw new Error(`Le mode ${kind==="reel"?"Reel":"Vidéo"} nécessite une vidéo.`);
+
+    media_type=kind==="photo" ? "photo"
+      : (kind==="reel" || kind==="video" || fileIsVideo) ? "reel"
+      : (fileIsImage ? "image" : "file");
+  }
+
+  const id=crypto.randomUUID();
+  const payload={
+    id,
+    user_id: ownerId,
+    content: String(text||""),
+    media_url: media_url || null,
+    media_type,
+    visibility: postVisibilityToDb(visibility)
+  };
+
+  const {error}=await SB.from("posts").insert(payload);
+  if(error){
+    // Évite de laisser un fichier orphelin dans Storage si l'INSERT échoue.
+    if(uploadedPath){
+      try{ await SB.storage.from("posts").remove([uploadedPath]); }catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
+    }
+    const msg=[error.message,error.details,error.hint].filter(Boolean).join(" — ");
+    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par les règles de sécurité Supabase (RLS). "+msg);
+    if(/foreign key|profiles/i.test(msg)) throw new Error("Le profil Supabase de ce compte est introuvable. "+msg);
+    throw new Error(msg||"Erreur Supabase lors de la publication.");
+  }
+
+  return {
+    id,
+    user_id: ownerId,
+    content: payload.content,
+    media_url: payload.media_url || "",
+    media_type: payload.media_type,
+    visibility: payload.visibility,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+}
+
+async function signOutSupabase(){
+  if(supabaseReady()){
+    const {error}=await SB.auth.signOut();
+    if(error) throw error;
+  }
+  state.current=null;
+  state.users=[];
+  save();
+}
+
+const STORAGE = "TAFASS_V4_STATE";
+const ADMIN_ID = "tafass-admin";
+const ADMIN = {
+  id: ADMIN_ID, firstName:"Tafaß", lastName:"Ofisialy", name:"Tafaß Ofisialy",
+  username:"tafabofisialy", email:"tafabofisialy@gmail.com",
+  phone:"+261383955105", country:"Madagascar", code:"+261",
+  location:"Antananarivo, Madagascar", type:"account", verified:true,
+  avatar:"", cover:"", bio:"Compte officiel de Tafaß.", createdAt:"2026-01-01",
+  followers:0, following:0, friends:0
+};
+
+const countryData = [
+["Afghanistan","+93"],["Albanie","+355"],["Algérie","+213"],["Andorre","+376"],["Angola","+244"],["Antigua-et-Barbuda","+1"],["Argentine","+54"],["Arménie","+374"],["Australie","+61"],["Autriche","+43"],["Azerbaïdjan","+994"],
+["Bahamas","+1"],["Bahreïn","+973"],["Bangladesh","+880"],["Barbade","+1"],["Belgique","+32"],["Belize","+501"],["Bénin","+229"],["Bhoutan","+975"],["Biélorussie","+375"],["Bolivie","+591"],["Bosnie-Herzégovine","+387"],["Botswana","+267"],["Brésil","+55"],["Brunei","+673"],["Bulgarie","+359"],["Burkina Faso","+226"],["Burundi","+257"],
+["Cabo Verde","+238"],["Cambodge","+855"],["Cameroun","+237"],["Canada","+1"],["Chili","+56"],["Chine","+86"],["Chypre","+357"],["Colombie","+57"],["Comores","+269"],["Congo","+242"],["Costa Rica","+506"],["Côte d’Ivoire","+225"],["Croatie","+385"],["Cuba","+53"],["Tchéquie","+420"],
+["Danemark","+45"],["Djibouti","+253"],["Dominique","+1"],["Égypte","+20"],["Émirats arabes unis","+971"],["Équateur","+593"],["Érythrée","+291"],["Espagne","+34"],["Estonie","+372"],["Eswatini","+268"],["États-Unis","+1"],["Éthiopie","+251"],
+["Fidji","+679"],["Finlande","+358"],["France","+33"],["Gabon","+241"],["Gambie","+220"],["Géorgie","+995"],["Ghana","+233"],["Grèce","+30"],["Grenade","+1"],["Guatemala","+502"],["Guinée","+224"],["Guinée-Bissau","+245"],["Guinée équatoriale","+240"],["Guyana","+592"],
+["Haïti","+509"],["Honduras","+504"],["Hongrie","+36"],["Inde","+91"],["Indonésie","+62"],["Irak","+964"],["Iran","+98"],["Irlande","+353"],["Islande","+354"],["Israël","+972"],["Italie","+39"],["Jamaïque","+1"],["Japon","+81"],["Jordanie","+962"],
+["Kazakhstan","+7"],["Kenya","+254"],["Kiribati","+686"],["Koweït","+965"],["Kirghizistan","+996"],["Laos","+856"],["Lettonie","+371"],["Liban","+961"],["Lesotho","+266"],["Libéria","+231"],["Libye","+218"],["Liechtenstein","+423"],["Lituanie","+370"],["Luxembourg","+352"],
+["Madagascar","+261"],["Malaisie","+60"],["Malawi","+265"],["Maldives","+960"],["Mali","+223"],["Malte","+356"],["Maroc","+212"],["Marshall","+692"],["Maurice","+230"],["Mauritanie","+222"],["Mexique","+52"],["Micronésie","+691"],["Moldavie","+373"],["Monaco","+377"],["Mongolie","+976"],["Monténégro","+382"],["Mozambique","+258"],["Myanmar","+95"],
+["Namibie","+264"],["Nauru","+674"],["Népal","+977"],["Nicaragua","+505"],["Niger","+227"],["Nigéria","+234"],["Norvège","+47"],["Nouvelle-Zélande","+64"],["Oman","+968"],["Ouganda","+256"],["Ouzbékistan","+998"],["Pakistan","+92"],["Palaos","+680"],["Panama","+507"],["Papouasie-Nouvelle-Guinée","+675"],["Paraguay","+595"],["Pays-Bas","+31"],["Pérou","+51"],["Philippines","+63"],["Pologne","+48"],["Portugal","+351"],
+["Qatar","+974"],["République centrafricaine","+236"],["République démocratique du Congo","+243"],["République dominicaine","+1"],["Roumanie","+40"],["Royaume-Uni","+44"],["Russie","+7"],["Rwanda","+250"],["Saint-Christophe-et-Niévès","+1"],["Sainte-Lucie","+1"],["Saint-Marin","+378"],["Saint-Vincent-et-les-Grenadines","+1"],["Salomon","+677"],["Salvador","+503"],["Samoa","+685"],["Sao Tomé-et-Principe","+239"],["Arabie saoudite","+966"],["Sénégal","+221"],["Serbie","+381"],["Seychelles","+248"],["Sierra Leone","+232"],["Singapour","+65"],["Slovaquie","+421"],["Slovénie","+386"],["Somalie","+252"],["Soudan","+249"],["Soudan du Sud","+211"],["Sri Lanka","+94"],["Suède","+46"],["Suisse","+41"],["Suriname","+597"],["Syrie","+963"],
+["Tadjikistan","+992"],["Tanzanie","+255"],["Tchad","+235"],["Thaïlande","+66"],["Timor oriental","+670"],["Togo","+228"],["Tonga","+676"],["Trinité-et-Tobago","+1"],["Tunisie","+216"],["Turkménistan","+993"],["Turquie","+90"],["Tuvalu","+688"],["Ukraine","+380"],["Uruguay","+598"],["Vanuatu","+678"],["Vatican","+39"],["Venezuela","+58"],["Vietnam","+84"],["Yémen","+967"],["Zambie","+260"],["Zimbabwe","+263"],["Réunion","+262"],["Palestine","+970"],["Taïwan","+886"],["Hong Kong","+852"],["Macao","+853"]
+];
+
+const NAV = [
+  ["home","home","Actualités"],
+  ["friends","friends","Amis"],
+  ["messages","messages","Messages"],
+  ["videos","videos","Vidéos"],
+  ["marketplace","marketplace","Marketplace"],
+  ["notifications","notifications","Notifications"]
+];
+
+function navIcon(name){
+  const icons={
+    home:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V21h13V9.5"/><path d="M9.5 21v-6h5v6"/></svg>',
+    friends:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 20c.4-4 2.3-6 5.5-6s5.1 2 5.5 6"/><circle cx="17" cy="9" r="2.2"/><path d="M15.5 14c2.7-.2 4.4 1.5 5 4"/></svg>',
+    messages:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v11H9l-5 3v-14Z"/><path d="M8 10h8M8 13h5"/></svg>',
+    videos:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="m10 8 6 4-6 4V8Z"/></svg>',
+    marketplace:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h16v10H4z"/><path d="M3 10 5 5h14l2 5"/><path d="M8 10v3M12 10v3M16 10v3"/></svg>',
+    notifications:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.4-2V10a4.6 4.6 0 0 0-9.2 0v5L6 17Z"/><path d="M10 20h4"/></svg>'
+  };
+  return icons[name]||icons.home;
+}
+
+
+/* ============================================================
+   LOCALISATION — interface Tafaß
+   Les textes système sont traduits côté front-end. Les contenus
+   écrits par les utilisateurs (publications, messages, bios...) ne
+   sont jamais modifiés automatiquement.
+   ============================================================ */
+const APP_LANGUAGES = [
+  ["Français","Français"],["Malagasy","Malagasy"],["English","English"],["Español","Español"],
+  ["Português","Português"],["Deutsch","Deutsch"],["Italiano","Italiano"],["Nederlands","Nederlands"],
+  ["Türkçe","Türkçe"],["Русский","Русский"],["Українська","Українська"],["Polski","Polski"],
+  ["Română","Română"],["Ελληνικά","Ελληνικά"],["العربية","العربية"],["हिन्दी","हिन्दी"],
+  ["বাংলা","বাংলা"],["اردو","اردو"],["中文","中文"],["日本語","日本語"],["한국어","한국어"],
+  ["ไทย","ไทย"],["Tiếng Việt","Tiếng Việt"],["Bahasa Indonesia","Bahasa Indonesia"],["Bahasa Melayu","Bahasa Melayu"],
+  ["Kiswahili","Kiswahili"],["Afrikaans","Afrikaans"],["Shqip","Shqip"],["Čeština","Čeština"],
+  ["Dansk","Dansk"],["Suomi","Suomi"],["Norsk","Norsk"],["Svenska","Svenska"],["Magyar","Magyar"],
+  ["Slovenčina","Slovenčina"],["Български","Български"],["Српски","Српски"],["עברית","עברית"],
+  ["فارسی","فارسی"],["ქართული","ქართული"],["Հայերեն","Հայերեն"],["नेपाली","नेपाली"],
+  ["Filipino","Filipino"],["Català","Català"],["Euskara","Euskara"]
+];
+const I18N={
+  "Français":{},
+  "English":{
+    "Actualités":"Home","Amis":"Friends","Messages":"Messages","Vidéos":"Videos","Marketplace":"Marketplace","Notifications":"Notifications","Rechercher":"Search","Rechercher sur Tafaß":"Search Tafaß","Menu":"Menu","Profil":"Profile","Pages":"Pages","Groupes":"Groups","Enregistrés":"Saved","Reels":"Reels","Événements":"Events","Paramètres":"Settings","Confidentialité":"Privacy","Sécurité":"Security","Comptes":"Accounts","Langue":"Language","Accessibilité":"Accessibility","Appareils":"Devices","Paiements":"Payments","Badge bleu":"Blue badge","Publicités":"Ads","Activité":"Activity","Aide":"Help","Conditions":"Terms","À propos":"About","Déconnexion":"Log out","Changer un autre compte":"Switch account","Connexion":"Log in","Créer un nouveau compte":"Create new account","E-mail ou numéro de téléphone":"Email or phone number","Mot de passe":"Password","Se connecter":"Log in","Mot de passe oublié ?":"Forgot password?","Afficher":"Show","Masquer":"Hide","ou":"or","Annuler":"Cancel","Retour":"Back","Continuer":"Continue","Créer mon compte":"Create my account","Informations personnelles":"Personal information","Pays et téléphone":"Country and phone","Compte":"Account","Photo de profil":"Profile photo","Finalisation":"Finish","Public":"Public","Amis":"Friends","Moi uniquement":"Only me","Tout le monde":"Everyone","Personne":"No one","Modifier":"Edit","Supprimer":"Delete","Enregistrer":"Save","Partager":"Share","Commenter":"Comment","Répondre":"Reply","Envoyer":"Send","Fermer":"Close","Ajouter":"Add","Suivre":"Follow","Ne plus suivre":"Unfollow","Voir tout":"See all","Aucun résultat":"No results","Aucune conversation":"No conversations","Aucune notification":"No notifications","Votre fil est prêt":"Your feed is ready","Publier":"Post","Photo":"Photo","Story":"Story","Vidéo":"Video","Fichier":"File","Recherche":"Search","Tout":"All","Personnes":"People","Comptes":"Accounts","Publications":"Posts","Photos":"Photos","À propos de Tafaß":"About Tafaß","Sombre":"Dark","Clair":"Light","Système":"System","Langue de l'application":"App language","Interface":"Interface","Contenu suggéré":"Suggested content","Lecture automatique":"Autoplay","Activées":"Enabled","Désactivées":"Disabled","Activé":"Enabled","Désactivé":"Disabled","Informations de connexion":"Login information","Changer de compte":"Switch account","Ajouter un compte":"Add account","Taille du texte":"Text size","Contraste":"Contrast","Animations":"Animations","Lecteur d'écran":"Screen reader","Appareil actuel":"Current device","Gestion des sessions":"Session management","Historique":"History","Solde de démonstration":"Demo balance","Aucune transaction":"No transactions","Pourquoi le badge ?":"Why the badge?","Demander le badge":"Request badge","Identité":"Identity","Catégorie":"Category","Justificatifs":"Documents","Paiement":"Payment","Confirmation":"Confirmation"
+  },
+  "Malagasy":{
+    "Actualités":"Vaovao","Amis":"Namana","Messages":"Hafatra","Vidéos":"Lahatsary","Marketplace":"Tsena","Notifications":"Fampandrenesana","Rechercher":"Karoka","Rechercher sur Tafaß":"Karoka ao Tafaß","Menu":"Menu","Profil":"Mombamomba","Pages":"Pejy","Groupes":"Vondrona","Enregistrés":"Voatahiry","Reels":"Reels","Événements":"Hetsika","Paramètres":"Fikirana","Confidentialité":"Tsiambaratelo","Sécurité":"Fiarovana","Comptes":"Kaonty","Langue":"Fiteny","Accessibilité":"Fahafahana miditra","Appareils":"Fitaovana","Paiements":"Fandoavam-bola","Badge bleu":"Badge manga","Publicités":"Dokam-barotra","Activité":"Hetsika natao","Aide":"Fanampiana","Conditions":"Fepetra","À propos":"Momba","Déconnexion":"Hivoaka","Changer un autre compte":"Hanova kaonty","Connexion":"Hiditra","Créer un nouveau compte":"Mamorona kaonty vaovao","E-mail ou numéro de téléphone":"E-mail na laharan-telefaona","Mot de passe":"Teny miafina","Se connecter":"Hiditra","Mot de passe oublié ?":"Adino ny teny miafina?","Afficher":"Asehoy","Masquer":"Afeno","ou":"na","Annuler":"Hanafoana","Retour":"Hiverina","Continuer":"Hanohy","Créer mon compte":"Mamorona ny kaontiko","Informations personnelles":"Mombamomba manokana","Pays et téléphone":"Firenena sy telefaona","Compte":"Kaonty","Photo de profil":"Sarin'ny profil","Finalisation":"Famaranana","Public":"Ho an'ny rehetra","Amis":"Namana","Moi uniquement":"Izaho ihany","Tout le monde":"Rehetra","Personne":"Tsy misy","Modifier":"Hanova","Supprimer":"Hamafa","Enregistrer":"Hitahiry","Partager":"Hizara","Commenter":"Haneho hevitra","Répondre":"Hamaly","Envoyer":"Alefa","Fermer":"Hidio","Ajouter":"Hanampy","Suivre":"Hanaraka","Ne plus suivre":"Aza arahina intsony","Voir tout":"Jereo daholo","Aucun résultat":"Tsy misy valiny","Aucune conversation":"Tsy misy resaka","Aucune notification":"Tsy misy fampandrenesana","Votre fil est prêt":"Vonona ny vaovao","Publier":"Hamoaka","Photo":"Sary","Story":"Story","Vidéo":"Lahatsary","Fichier":"Rakitra","Recherche":"Karoka","Tout":"Daholo","Personnes":"Olona","Comptes":"Kaonty","Publications":"Famoahana","Photos":"Sary","À propos de Tafaß":"Momba an'i Tafaß","Sombre":"Maizina","Clair":"Mazava","Système":"Rafitra","Langue de l'application":"Fitenin'ny app","Interface":"Interface","Contenu suggéré":"Votoaty soso-kevitra","Lecture automatique":"Fandehanana ho azy","Activées":"Mandeha","Désactivées":"Maty","Activé":"Mandeha","Désactivé":"Maty","Informations de connexion":"Mombamomba fidirana","Changer de compte":"Hanova kaonty","Ajouter un compte":"Hanampy kaonty","Taille du texte":"Haben'ny soratra","Contraste":"Hifanohitra","Animations":"Animation","Lecteur d'écran":"Mpamaky efijery","Appareil actuel":"Fitaovana ampiasaina","Gestion des sessions":"Fitantanana session","Historique":"Tantaran'ny hetsika","Solde de démonstration":"Saldo fanandramana","Aucune transaction":"Tsy misy fifanakalozana","Pourquoi le badge ?":"Nahoana ny badge?","Demander le badge":"Hangataka badge","Identité":"Mombamomba","Catégorie":"Sokajy","Justificatifs":"Antontan-taratasy","Paiement":"Fandoavana","Confirmation":"Fanamafisana"
+  },
+  "Español":{"Actualités":"Inicio","Amis":"Amigos","Messages":"Mensajes","Vidéos":"Vídeos","Marketplace":"Marketplace","Notifications":"Notificaciones","Rechercher":"Buscar","Menu":"Menú","Profil":"Perfil","Pages":"Páginas","Groupes":"Grupos","Enregistrés":"Guardados","Reels":"Reels","Événements":"Eventos","Paramètres":"Configuración","Confidentialité":"Privacidad","Sécurité":"Seguridad","Comptes":"Cuentas","Langue":"Idioma","Accessibilité":"Accesibilidad","Appareils":"Dispositivos","Paiements":"Pagos","Badge bleu":"Insignia azul","Publicités":"Anuncios","Activité":"Actividad","Aide":"Ayuda","Conditions":"Condiciones","À propos":"Acerca de","Déconnexion":"Cerrar sesión","Connexion":"Iniciar sesión","Créer un nouveau compte":"Crear una cuenta nueva","Mot de passe":"Contraseña","Mot de passe oublié ?":"¿Olvidaste tu contraseña?","Se connecter":"Iniciar sesión","Afficher":"Mostrar","Masquer":"Ocultar","Continuer":"Continuar","Retour":"Atrás","Annuler":"Cancelar","Enregistrer":"Guardar","Partager":"Compartir","Commenter":"Comentar","Répondre":"Responder","Envoyer":"Enviar","Fermer":"Cerrar","Ajouter":"Añadir","Suivre":"Seguir","Ne plus suivre":"Dejar de seguir","Voir tout":"Ver todo","Aucun résultat":"Sin resultados","Public":"Público","Moi uniquement":"Solo yo","Tout le monde":"Todos","Personne":"Nadie","Tout":"Todo","Personnes":"Personas","Publications":"Publicaciones","Photos":"Fotos","Recherche":"Búsqueda","Photo":"Foto","Vidéo":"Vídeo","Fichier":"Archivo","Story":"Historia","Sombre":"Oscuro","Clair":"Claro","Système":"Sistema","Langue de l'application":"Idioma de la aplicación","Interface":"Interfaz","Taille du texte":"Tamaño del texto","Contraste":"Contraste","Animations":"Animaciones","Appareil actuel":"Dispositivo actual","Historique":"Historial","Identité":"Identidad","Catégorie":"Categoría","Justificatifs":"Documentos","Paiement":"Pago","Confirmation":"Confirmación"},
+  "Português":{"Actualités":"Início","Amis":"Amigos","Messages":"Mensagens","Vidéos":"Vídeos","Marketplace":"Marketplace","Notifications":"Notificações","Rechercher":"Pesquisar","Menu":"Menu","Profil":"Perfil","Pages":"Páginas","Groupes":"Grupos","Enregistrés":"Salvos","Reels":"Reels","Événements":"Eventos","Paramètres":"Configurações","Confidentialité":"Privacidade","Sécurité":"Segurança","Comptes":"Contas","Langue":"Idioma","Accessibilité":"Acessibilidade","Appareils":"Dispositivos","Paiements":"Pagamentos","Badge bleu":"Selo azul","Publicités":"Anúncios","Activité":"Atividade","Aide":"Ajuda","Conditions":"Termos","À propos":"Sobre","Déconnexion":"Sair","Connexion":"Entrar","Créer un nouveau compte":"Criar nova conta","Mot de passe":"Senha","Mot de passe oublié ?":"Esqueceu a senha?","Se connecter":"Entrar","Afficher":"Mostrar","Masquer":"Ocultar","Continuer":"Continuar","Retour":"Voltar","Annuler":"Cancelar","Enregistrer":"Salvar","Partager":"Compartilhar","Commenter":"Comentar","Répondre":"Responder","Envoyer":"Enviar","Fermer":"Fechar","Ajouter":"Adicionar","Suivre":"Seguir","Ne plus suivre":"Deixar de seguir","Voir tout":"Ver tudo","Aucun résultat":"Nenhum resultado","Public":"Público","Moi uniquement":"Somente eu","Tout le monde":"Todos","Personne":"Ninguém","Tout":"Tudo","Personnes":"Pessoas","Publications":"Publicações","Photos":"Fotos","Recherche":"Pesquisa","Photo":"Foto","Vidéo":"Vídeo","Fichier":"Arquivo","Story":"Story","Sombre":"Escuro","Clair":"Claro","Système":"Sistema","Langue de l'application":"Idioma do aplicativo","Interface":"Interface","Taille du texte":"Tamanho do texto","Contraste":"Contraste","Animations":"Animações","Appareil actuel":"Dispositivo atual","Historique":"Histórico","Identité":"Identidade","Catégorie":"Categoria","Justificatifs":"Documentos","Paiement":"Pagamento","Confirmation":"Confirmação"}
+};
+function tText(text){const lang=state.settings?.language||"Français";return I18N[lang]?.[text]||text;}
+function localizeApp(){
+  const lang=state.settings?.language||"Français";
+  if(lang==="Français") return;
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  const nodes=[];let n;while(n=walker.nextNode())nodes.push(n);
+  nodes.forEach(node=>{const raw=node.nodeValue.trim();if(raw&&I18N[lang]?.[raw])node.nodeValue=node.nodeValue.replace(raw,I18N[lang][raw]);});
+  document.querySelectorAll("input[placeholder],textarea[placeholder]").forEach(el=>{const v=el.getAttribute("placeholder");if(I18N[lang]?.[v])el.setAttribute("placeholder",I18N[lang][v]);});
+  document.querySelectorAll("input[value],option").forEach(el=>{const v=el.textContent?.trim()||el.value;if(I18N[lang]?.[v]){if(el.tagName==="OPTION")el.textContent=I18N[lang][v];else el.value=I18N[lang][v];}});
+}
+
+const MENU_ITEMS = [
+["profile","◯","Profil"],["friends","♧","Amis"],["messages","▣","Messages"],
+["notifications","♢","Notifications"],["pages","▤","Pages"],["groups","◉","Groupes"],
+["saved","🔖","Enregistrés"],["reels","◆","Reels"],["events","◫","Événements"],
+["settings","⚙","Paramètres"],["privacy","◌","Confidentialité"],["security","🔒","Sécurité"],
+["accounts","◎","Comptes"],["language","文","Langue"],["accessibility","♿","Accessibilité"],
+["devices","▣","Appareils"],["payments","◇","Paiements"],["badge","✓","Badge bleu"],
+["ads","▥","Publicités"],["activity","◷","Activité"],["help","?","Aide"],["terms","§","Conditions"],
+["about","ⓘ","À propos"],["switchAccount","⇄","Changer un autre compte"],["admin","♛","Administration"],["logout","↪","Déconnexion"]
+];
+
+const PAGE_CATS = [
+"Entreprise","Artiste","Musicien","Acteur","Comédien","Influenceur","Marque","Boutique","Restaurant","Association","Organisation","Média","Créateur","Sport","Éducation","Service","Autre",
+"Personnalité publique","Président de la République","Vice-président","Premier ministre","Ministre","Député","Sénateur","Maire","Élu local","Responsable politique","Diplomate","Ambassadeur","Fonctionnaire","Journaliste","Animateur","Présentateur","Personnalité médiatique","Chef d'entreprise","Entrepreneur","Professionnel","Médecin","Avocat","Enseignant","Chercheur","Auteur","Écrivain","Photographe","Producteur","Réalisateur","Influenceur digital","Créateur de contenu","Streamer","Gamer","Coach","Athlète","Association caritative","ONG","Fondation","Institution","Administration publique","Service public","Tourisme","Hôtel","Voyage","Transport","Immobilier","Finance","Banque","Assurance","Technologie","Logiciel","Application","Télécommunication","Mode","Beauté","Santé","Alimentation","Commerce","E-commerce","Église / communauté","Culture","Musée","Université","École","Club","Fédération","Média sportif","Radio","Télévision","Podcast","Magazine","Blog","Communauté","Projet","Événement","Autre"
+];
+const PROFILE_CATS = PAGE_CATS;
+
+let state = loadState();
+let route = state.current ? "home" : "home";
+let searchFilter = "Tout";
+let activeConversation = null;
+let registerStep = 1;
+let registerAvatar = "";
+let editingPageId = null;
+let profileTab = "posts";
+let profileViewingId = null;
+let pageTab = "posts";
+let mediaFilter = "all";
+let marketFilter = "all";
+let friendTab = "friends";
+let friendSearch = "";
+let openReactionPostId = null;
+let routeHistory = [];
+
+function $(id){ return document.getElementById(id); }
+function uid(prefix="id"){ return prefix+"_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8); }
+function appLink(id){ return `https://tafa-ofisialy.vercel.app/id=${encodeURIComponent(id)}`; }
+function copyAppLink(id,label="Lien copié"){
+  const url=appLink(id);
+  if(navigator.clipboard?.writeText){ navigator.clipboard.writeText(url).then(()=>toast(label)).catch(()=>fallbackCopy(url,label)); }
+  else fallbackCopy(url,label);
+}
+function fallbackCopy(text,label){ const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy");toast(label);}catch(e){modal("Lien",`<div class="link-share-card-v91"><input value="${esc(text)}" readonly><button class="btn primary wide" data-action="closeModal">Fermer</button></div>`);} ta.remove(); }
+function shareLink(id,title="Partager le lien"){
+  const url=appLink(id);
+  modal(title,`<div class="link-share-card-v91"><div class="link-preview-v91"><span>↗</span><div><b>Lien Tafaß</b><small>${esc(url)}</small></div></div><button class="btn primary wide" data-action="copyLink" data-id="${esc(id)}">Copier le lien</button><button class="btn secondary wide" data-action="nativeShareLink" data-id="${esc(id)}">Partager</button></div>`);
+}
+function esc(v=""){ return String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function save(){ localStorage.setItem(STORAGE, JSON.stringify(state)); }
+function loadState(){
+  try{
+    const raw=localStorage.getItem(STORAGE);
+    if(raw){
+      const s=JSON.parse(raw);
+      return Object.assign(baseState(),s);
+    }
+  }catch(e){ console.warn("State reset",e); }
+  return baseState();
+}
+function baseState(){
+  return {
+    users:[structuredClone(ADMIN)], pages:[], groups:[], posts:[], stories:[], comments:[], notifications:[],
+    conversations:[], messages:[], friendRequests:[], friendships:[], follows:[], saved:[], searches:[],
+    badgeRequests:[], reports:[], events:[], marketplace:[], settings:{dark:false,language:"Français",privacy:"public"},
+    current:null, pageMode:null, drafts:[]
+  };
+}
+function me(){ return state.users.find(u=>u.id===state.current) || null; }
+function findUser(id){ return state.users.find(u=>u.id===id); }
+function findPage(id){ return state.pages.find(p=>p.id===id); }
+function displayName(entity){ return entity?.name || [entity?.firstName,entity?.lastName].filter(Boolean).join(" ") || "Utilisateur"; }
+function avatar(entity, cls="avatar"){ return `<span class="${cls}">${entity?.avatar?`<img src="${esc(entity.avatar)}" alt="">`:esc((displayName(entity)[0]||"T").toUpperCase())}</span>`; }
+function verified(entity){ return entity?.verified ? `<span class="verified-badge">Compte vérifié</span>` : ""; }
+function typePill(entity){ return `<span class="type-pill">${entity?.type==="page"?"PAGE":"COMPTE"}</span>`; }
+function timeAgo(ts){ const d=Date.now()-new Date(ts).getTime(),m=Math.floor(d/60000),h=Math.floor(m/60),day=Math.floor(h/24); if(m<1)return"à l'instant";if(m<60)return`il y a ${m} min`;if(h<24)return`il y a ${h} h`;if(day<7)return`il y a ${day} j`;return new Date(ts).toLocaleDateString("fr-FR"); }
+function toast(t){
+  const el=$("toast");
+  if(!el)return;
+  el.textContent=String(t||"");
+  el.style.display="block";
+  el.classList.add("show");
+  clearTimeout(toast.t);
+  toast.t=setTimeout(()=>{el.classList.remove("show");el.style.display="none";},3000);
+}
+function modal(title,body,buttons=""){
+  $("modalRoot").innerHTML=`<div class="modal-backdrop" data-close-modal><div class="modal" onclick="event.stopPropagation()"><div class="modal-head"><h2>${title}</h2><button class="close" data-action="closeModal" aria-label="Fermer">Fermer</button></div>${body}${buttons?`<div class="actions" style="margin-top:16px;justify-content:flex-end">${buttons}</div>`:""}</div></div>`;
+  $("modalRoot").querySelectorAll("[data-action]").forEach(el=>el.onclick=e=>handleAction(e,el));
+  $("modalRoot").querySelectorAll("[data-close-modal]").forEach(el=>el.onclick=()=>closeModal());
+}
+function closeModal(){ $("modalRoot").innerHTML=""; }
+function notify(userId,type,text,entityId=null){
+  if(!userId)return;
+  state.notifications.unshift({id:uid("n"),userId,type,text,entityId,read:false,createdAt:new Date().toISOString()});save();
+}
+function routeTo(r, options={}){
+  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
+  if(!allowed.includes(r)) r="home";
+  if(!options.replace && route!==r) routeHistory.push(route);
+  route=r;
+  if(r!=="profile")profileViewingId=null;
+  if(r!=="pageView")pageTab="posts";
+  openReactionPostId=null;
+  if($("leftSidebar"))$("leftSidebar").classList.remove("open");
+  render();
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+function goBack(fallback="menu"){
+  const previous=routeHistory.pop();
+  if(previous && previous!==route) return routeTo(previous,{replace:true});
+  return routeTo(fallback,{replace:true});
+}
+function routeBackBar(label,target="menu"){
+  return `<div class="route-back-bar-v94"><button type="button" data-action="goBack" data-back-target="${esc(target)}"><span>‹</span><b>${esc(label)}</b></button></div>`;
+}
+function unreadNotifications(){ return state.notifications.filter(n=>n.userId===state.current&&!n.read).length; }
+function pendingFriendInvites(){ return state.friendRequests.filter(r=>r.to===state.current&&r.status==="pending").length; }
+function setupNavigation(){
+  /* Navigation unique: icônes seulement, style mobile premium. */
+  const nav = $("bottomNav");
+  if(nav) nav.innerHTML = NAV.map(([id,icon,label])=>{
+    const count = id === "messages" ? unreadMessages() : id === "notifications" ? unreadNotifications() : id === "friends" ? pendingFriendInvites() : 0;
+    const badge = count ? `<em id="${id}Badge" class="badge-count">${count>99?"99+":count}</em>` : id === "messages" ? `<em id="msgBadge" class="badge-count hidden">0</em>` : id === "notifications" ? `<em id="notifBadge" class="badge-count hidden">0</em>` : id === "friends" ? `<em id="friendsBadge" class="badge-count hidden">0</em>` : "";
+    return `<button class="nav-item ${route===id?"active":""}" data-route="${id}" title="${label}" aria-label="${label}"><span class="nav-glyph">${navIcon(icon)}</span>${badge}<small class="sr-only">${label}</small></button>`;
+  }).join("");
+  const legacy = $("mainNav");
+  if(legacy) legacy.innerHTML = "";
+}
+function isOnline(u){ return !!u?.online; }
+function canSeePost(p){
+  if(p.ownerId===state.current)return true;
+  if(p.ownerType==="page")return true;
+  if((p.visibility||"Public")==="Public")return true;
+  if(p.visibility==="Amis")return isFriend(p.ownerId);
+  if(p.visibility==="Sélection personnalisée")return (p.allowedUsers||[]).includes(state.current);
+  return false;
+}
+function downloadData(data,name){if(!data)return toast("Aucun fichier disponible");const a=document.createElement("a");a.href=data;a.download=name||"tafab-media";document.body.appendChild(a);a.click();a.remove();}
+function openMediaViewer(p){const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);modal(p.title||displayName(o),`<div class="media-viewer">${p.mediaType==="video"?`<video src="${esc(p.media)}" controls autoplay></video>`:`<img src="${esc(p.media)}" alt="">`}<button class="btn primary wide" data-action="downloadMedia" data-id="${p.id}">⇩ Enregistrer</button></div>`);}
+function render(){
+  const splash=$("splash"),auth=$("authScreen"),app=$("appScreen");
+  if(!state.current){auth.classList.remove("hidden");app.classList.add("hidden");return;}
+  auth.classList.add("hidden");app.classList.remove("hidden");
+  setupNavigation();
+  const u=me();
+  $("sideName").textContent=displayName(u);$("sideHandle").textContent="@"+(u?.username||"");
+  $("sideAvatar").outerHTML=avatar(u,"avatar") .replace("<span","<span id=\"sideAvatar\"");
+  const unread=unreadNotifications();
+  const nb=$("notifBadge"); if(nb){nb.textContent=unread>99?"99+":unread;nb.classList.toggle("hidden",unread===0)}
+  const mb=$("msgBadge"); const mu=unreadMessages(); if(mb){mb.textContent=mu>99?"99+":mu;mb.classList.toggle("hidden",mu===0)}
+  const fb=$("friendsBadge"); const fi=pendingFriendInvites(); if(fb){fb.textContent=fi>99?"99+":fi;fb.classList.toggle("hidden",fi===0)}
+  $("mainContent").innerHTML=renderRoute();
+  $("rightSuggestions").innerHTML=renderSuggestions(3);
+  localizeApp();
+  setupNavigation();
+  bindPageEvents();
+}
+function unreadMessages(){ return state.messages.filter(m=>m.to===state.current&&!m.read).length; }
+function renderRoute(){
+  switch(route){
+    case"home":return renderHome();case"friends":return renderFriends();case"search":return renderSearch();case"profile":return renderProfile(findUser(profileViewingId||state.current)||me());
+    case"notifications":return renderNotifications();case"messages":return renderMessages();case"pages":return renderPages();
+    case"groups":return renderGroups();case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
+    case"events":return renderEvents();case"menu":return renderMenu();case"settings":return renderSettings();case"privacy":return renderPrivacy();
+    case"security":return renderSecurity();case"accounts":return renderAccounts();case"language":return renderLanguage();case"accessibility":return renderAccessibility();
+    case"devices":return renderDevices();case"payments":return renderPayments();case"badge":return renderBadge();case"ads":return renderAds();
+    case"activity":return renderActivity();case"help":return renderHelp();case"terms":return renderTerms();case"about":return renderAbout();case"admin":return renderAdmin();
+    case"pageView":return renderPageView(editingPageId);default:return renderHome();
+  }
+}
+function renderHome(){
+  const posts=[...state.posts].filter(canSeePost).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  return `<section class="news-feed-v90">
+    <div class="feed-refresh-row-v95"><span>Actualités</span><button class="btn secondary" data-action="refreshFeed">↻ Actualiser</button></div>
+    <div class="news-composer-v90">
+      <button class="news-avatar-button-v90" data-route="profile">${avatar(me(),"avatar lg")}</button>
+      <button class="news-composer-input-v90" data-action="openComposer">À quoi pensez-vous ?</button>
+      <button class="news-photo-button-v90" data-action="openComposer" data-kind="photo"><span>▧</span><b>Photo</b></button>
+    </div>
+    ${renderStories()}
+    <div class="news-post-stack-v90">
+      ${posts.length?posts.map(renderPost).join(""):`<div class="card empty feed-empty"><div class="empty-icon">✦</div><b>Votre fil est prêt</b><p>Publiez votre premier contenu pour commencer.</p><button class="btn primary" data-action="openComposer">Publier</button></div>`}
+    </div>
+  </section>`;
+}
+function renderStories(){
+  const stories=state.stories.filter(s=>new Date(s.expiresAt)>Date.now() && (s.ownerId===state.current || s.ownerType==="page" || isFriend(s.ownerId)));
+  return `<div class="stories stories-premium"><div class="story-card create" data-action="createStory"><span class="plus">+</span><b>Créer</b><small>Votre story</small></div>${stories.map(s=>{const owner=s.ownerType==="page"?findPage(s.ownerId):findUser(s.ownerId);return `<div class="story-card" data-action="viewStory" data-id="${s.id}"><div class="story-ring"><div class="story-bg" style="background-image:url('${esc(s.media||"")}')"></div>${avatar(owner,"avatar sm story-avatar")}</div><span class="story-label">${esc(displayName(owner))}</span><small class="story-status">${s.ownerId===state.current?`${(s.views||[]).length} vues`:isOnline(owner)?"En ligne":""}</small></div>`}).join("")}</div>`;
+}
+function renderPost(p){
+  const owner=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId); if(!owner)return"";
+  if(!canSeePost(p))return"";
+  const reactions=p.reactions||{}, count=Object.values(reactions).reduce((a,b)=>a+b,0), mine=p.myReaction?.[state.current]||"";
+  const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
+  const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
+  const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":""}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`:`<div class="post-media-wrap media-click" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`):"";
+  const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
+  return `<article class="card post post-premium" data-post="${p.id}">
+    <header class="post-head"><button class="post-owner" data-action="${ownerAction}" data-id="${owner.id}">${avatar(owner,"avatar post-avatar")}<span class="post-meta"><strong>${esc(displayName(owner))}</strong><span class="post-badges">${verified(owner)} ${typePill(owner)}</span><small>${timeAgo(p.createdAt)} · ${esc(p.visibility||"Public")}</small></span></button><button class="icon-btn post-more" data-action="postMore" data-id="${p.id}">•••</button></header>
+    ${p.title?`<h3 class="post-title">${esc(p.title)}</h3>`:""}${p.text?`<div class="post-text">${esc(p.text)}</div>`:""}${mediaHtml}
+    <div class="post-stats"><span class="reaction-summary">${count?`✦ ${count}`:""}</span><span>${comments.length} commentaires</span><span>${p.shares||0} partages</span></div>
+    ${openReactionPostId===p.id?renderInlineReactionPicker(p):""}
+    <div class="post-actions premium-reaction-bar"><button class="${mine?"is-reacted":""}" data-action="reactionMenu" data-id="${p.id}"><span class="reaction-action-icon">${mine?reactionEmoji(mine):"♡"}</span><span>${mine||"J'aime"}</span></button><button data-action="comment" data-id="${p.id}"><span class="reaction-action-icon">◯</span><span>Commenter</span></button><button data-action="share" data-id="${p.id}"><span class="reaction-action-icon">↗</span><span>Partager</span></button></div>
+    <div class="comments">${comments.slice(-4).map(c=>renderComment(c,p.id)).join("")}<form class="comment-form" data-comment-form="${p.id}">${avatar(me(),"avatar sm")}<input placeholder="Écrire un commentaire..." required><button class="btn primary" type="submit">Envoyer</button></form></div>
+  </article>`;
+}
+function reactionEmoji(type){
+  const map={"J'aime":"👍","J'adore":"❤️","Solidaire":"🤗","Haha":"😂","Waouh":"😮","Triste":"😢","En colère":"😡","👍":"👍","❤️":"❤️","🤗":"🤗","😂":"😂","😮":"😮","😢":"😢","😡":"😡"};
+  return map[type]||"👍";
+}
+function renderInlineReactionPicker(p){
+  const reactions=[["👍","J'aime","blue"],["❤️","J'adore","red"],["🤗","Solidaire","orange"],["😂","Haha","yellow"],["😮","Waouh","yellow"],["😢","Triste","yellow"],["😡","En colère","red"]];
+  return `<div class="reaction-picker-v94" data-reaction-picker="${p.id}">${reactions.map(([emoji,label,tone])=>`<button type="button" class="reaction-choice-v94 tone-${tone} ${p.myReaction?.[state.current]===label?"selected":""}" data-action="chooseReaction" data-id="${p.id}" data-reaction="${label}"><span class="reaction-circle-v94">${emoji}</span><b>${label}</b></button>`).join("")}</div>`;
+}
+function renderComment(c,postId,depth=0){
+  const u=findUser(c.userId), replies=state.comments.filter(x=>x.parentId===c.id); if(!u)return"";
+  const liked=c.likes?.[state.current];
+  return `<div class="comment premium-comment" data-comment="${c.id}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p></div><div class="comment-actions"><button data-action="likeComment" data-id="${c.id}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${c.id}">Répondre</button>${u.id===state.current?`<button data-action="editComment" data-id="${c.id}">Modifier</button><button data-action="deleteComment" data-id="${c.id}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replies.length?`<div class="comment-replies">${replies.map(r=>renderComment(r,postId,depth+1)).join("")}</div>`:""}</div></div>`;
+}
+function requestSentRow(r){
+  const u=findUser(r.to); if(!u)return "";
+  return `<div class="friend-row-premium"><button class="friend-main" data-action="viewProfile" data-id="${u.id}">${avatar(u,"avatar lg")}<span><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")}</small></span></button><button class="btn secondary" data-action="declineFriend" data-id="${u.id}">Annuler</button></div>`;
+}
+function renderFriends(){
+  let friends=state.friendships.filter(f=>f.a===state.current||f.b===state.current).map(f=>findUser(f.a===state.current?f.b:f.a)).filter(Boolean);
+  const received=state.friendRequests.filter(r=>r.to===state.current&&r.status==="pending").map(r=>findUser(r.from)).filter(Boolean);
+  const sent=state.friendRequests.filter(r=>r.from===state.current&&r.status==="pending").map(r=>findUser(r.to)).filter(Boolean);
+  let suggestions=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)&&u.id!==ADMIN_ID);
+  const q=friendSearch.trim().toLowerCase();
+  const match=u=>!q||`${displayName(u)} ${u.username||""}`.toLowerCase().includes(q);
+  friends=friends.filter(match); suggestions=suggestions.filter(match);
+
+  const tabButton=(id,label,count="")=>`<button class="${friendTab===id?"active":""}" data-action="friendTab" data-tab="${id}">${label}${count!==""?` <b>${count}</b>`:""}</button>`;
+  let content="";
+  if(friendTab==="friends"){
+    content=`<div class="friends-section"><div class="section-heading"><div><h2>Mes amis</h2><span>${friends.length}</span></div></div><div class="friends-list">${friends.length?friends.map(friendRowPremium).join(""):`<div class="empty-state"><b>Aucun ami trouvé</b><span>Recherchez une personne ou ajoutez des amis.</span></div>`}</div></div>`;
+  } else if(friendTab==="received"){
+    content=`<div class="friends-section"><div class="section-heading"><div><h2>Invitations</h2><span>${received.length}</span></div></div><div class="friends-list">${received.length?received.map(u=>{const r=state.friendRequests.find(x=>x.from===u.id&&x.to===state.current&&x.status==="pending");return r?requestRowPremium(r):""}).join(""):`<div class="empty-state"><b>Aucune invitation</b><span>Vous êtes à jour.</span></div>`}</div></div>`;
+  } else if(friendTab==="sent"){
+    content=`<div class="friends-section"><div class="section-heading"><div><h2>Envoyées</h2><span>${sent.length}</span></div></div><div class="friends-list">${sent.length?sent.map(u=>{const r=state.friendRequests.find(x=>x.from===state.current&&x.to===u.id&&x.status==="pending");return r?requestSentRow(r):friendSuggestionPremium(u)}).join(""):`<div class="empty-state"><b>Aucune invitation envoyée</b><span>Les demandes que vous envoyez apparaîtront ici.</span></div>`}</div></div>`;
+  } else {
+    content=`<div class="friends-section"><div class="section-heading"><div><h2>Suggestions</h2><span>${suggestions.length}</span></div></div><div class="friends-list">${suggestions.length?suggestions.map(friendSuggestionPremium).join(""):`<div class="empty-state"><b>Aucune suggestion</b><span>Revenez plus tard.</span></div>`}</div></div>`;
+  }
+
+  return `<section class="friends-premium">
+    <div class="premium-page-head friends-head-clean">
+      <div><h1>Amis</h1></div>
+      <button class="btn primary" data-action="openFindFriends">⌕ Rechercher</button>
+    </div>
+    <div class="friends-search-box"><span>⌕</span><input id="friendsSearchInput" value="${esc(friendSearch)}" placeholder="Rechercher une personne"></div>
+    <div class="premium-tabs friends-tabs">
+      ${tabButton("friends","Amis",friends.length)}
+      ${tabButton("received","Invitations",received.length)}
+      ${tabButton("sent","Envoyées",sent.length)}
+      ${tabButton("suggestions","Suggestions")}
+    </div>
+    ${content}
+  </section>`;
+}
+function friendRowPremium(u){
+  return `<article class="friend-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))} ${verified(u)}</b><span>@${esc(u.username||"user")}</span><small>${mutualCount(u.id)} ami(s) en commun</small></div><div class="friend-actions"><button class="btn secondary" data-action="viewProfile" data-id="${u.id}">Profil</button><button class="icon-btn danger-icon" data-action="removeFriend" data-id="${u.id}" title="Supprimer" aria-label="Supprimer">Supprimer</button></div></article>`;
+}
+function requestRowPremium(r){
+  const u=findUser(r.from);
+  return `<article class="friend-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))}</b><span>@${esc(u.username||"user")}</span><small>Invitation d'ami</small></div><div class="friend-actions"><button class="btn primary" data-action="acceptFriend" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="declineFriend" data-id="${r.id}">Refuser</button></div></article>`;
+}
+function friendSuggestionPremium(u){
+  return `<article class="friend-card suggestion-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))} ${verified(u)}</b><span>@${esc(u.username||"user")}</span><small>${mutualCount(u.id)} ami(s) en commun</small></div><div class="friend-actions"><button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button></div></article>`;
+}
+function isFriend(id){return state.friendships.some(f=>(f.a===state.current&&f.b===id)||(f.b===state.current&&f.a===id));}
+function friendRow(u){return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${mutualCount(u.id)} ami(s) en commun</small></div><div class="actions"><button class="btn secondary" data-action="viewProfile" data-id="${u.id}">Profil</button><button class="btn ghost danger" data-action="removeFriend" data-id="${u.id}">Supprimer</button></div></div>`}
+function requestRow(r){const u=findUser(r.from);return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)}</small></div><div class="actions"><button class="btn primary" data-action="acceptFriend" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="declineFriend" data-id="${r.id}">Refuser</button></div></div>`}
+function friendSuggestion(u){return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)} · ${mutualCount(u.id)} en commun</small></div><button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button></div>`}
+function mutualCount(id){return 0;}
+function resolveDeepLinkValue(value){
+  const raw=(value||"").trim();
+  const m=raw.match(/(?:[?&]|\/)id=([^&#/\s]+)/i);
+  return m?decodeURIComponent(m[1]):raw;
+}
+function openSearchDeepLink(value){
+  const id=resolveDeepLinkValue(value);
+  if(!id)return false;
+  if(id.startsWith("u_")){ const u=findUser(id); if(u){routeToProfile(id);return true;} }
+  if(id.startsWith("page_")){ const pg=findPage(id); if(pg){editingPageId=id;routeTo("pageView");return true;} }
+  if(id.startsWith("post_")){ const post=state.posts.find(x=>x.id===id); if(post){route="home";render();setTimeout(()=>modal(post.title||"Publication",renderPost(post)),0);return true;} }
+  return false;
+}
+
+async function refreshSearchProfiles(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const {data,error}=await SB.from("profiles").select("*").order("created_at",{ascending:false});
+    if(error) throw error;
+    mergeUsersFromProfiles(data||[]);
+    save();
+  }catch(err){
+    console.error("Recherche profils Supabase:",err);
+  }
+}
+
+function renderSearch(){
+  const pageBar=pageContextBar();
+  const q=($("globalSearch")?.value||window.globalSearchQuery||"").trim().toLowerCase();
+  const all=[
+    ...state.users.map(x=>({
+      kind:"Personnes",
+      title:displayName(x),
+      sub:"@"+(x.username||"user"),
+      searchText:[displayName(x),x.username,x.pseudo,x.email,x.firstName,x.lastName,x.country].filter(Boolean).join(" "),
+      obj:x
+    })),
+    ...state.pages.map(x=>({kind:"Pages",title:x.name,sub:(x.category||"Page")+" · PAGE",searchText:[x.name,x.username,x.category,x.description].filter(Boolean).join(" "),obj:x})),
+    ...state.groups.map(x=>({kind:"Groupes",title:x.name,sub:"Groupe",searchText:[x.name,x.description].filter(Boolean).join(" "),obj:x})),
+    ...state.posts.map(x=>({kind:x.mediaType==="video"||x.mediaType==="reel"?"Reels":x.mediaType?"Photos":"Publications",title:(x.title||x.text||"Publication").slice(0,80),sub:"Contenu Tafaß",searchText:[x.title,x.text,x.ownerName].filter(Boolean).join(" "),obj:x}))
+  ];
+  const filters=["Tout","Personnes","Comptes","Pages","Groupes","Publications","Photos","Reels"];
+  let results=q?all.filter(x=>(x.searchText||`${x.title} ${x.sub} ${x.kind}`).toLowerCase().includes(q)):all.slice(0,12);
+  if(searchFilter!=="Tout")results=results.filter(x=>searchFilter==="Comptes"?x.kind==="Personnes":x.kind===searchFilter);
+  return `${pageBar}<section class="search-premium-v90">
+    <div class="search-hero-v90"><div class="search-logo-v90">⌕</div><div><span class="eyebrow">TAFAß · EXPLORER</span><h1>Rechercher</h1><p>Trouvez rapidement une personne, un compte, une Page, un groupe ou un contenu.</p></div></div>
+    <div class="search-box-v90"><span>⌕</span><input id="pageSearchInput" value="${esc(window.globalSearchQuery||($('globalSearch')?.value||''))}" placeholder="Rechercher sur Tafaß"><button class="search-clear-v90" data-action="clearPageSearch">Effacer</button></div>
+    <div class="search-filter-grid-v90">${filters.map(f=>`<button class="search-filter-v90 ${searchFilter===f?"active":""}" data-action="searchFilter" data-filter="${f}"><span>${f==="Tout"?"✦":f==="Personnes"?"♧":f==="Comptes"?"◯":f==="Pages"?"▤":f==="Groupes"?"◉":f==="Publications"?"▣":f==="Photos"?"▧":f==="Reels"?"◆":"◆"}</span><b>${f}</b></button>`).join("")}</div>
+    <div class="search-result-stack-v90">${results.length?results.map(searchRowPremium).join(""):`<div class="search-empty-v90"><div>⌕</div><b>Aucun résultat</b><span>Essayez un autre terme ou filtre.</span></div>`}</div>
+    ${state.searches.length?`<div class="search-history-v90"><div><b>Recherches récentes</b><button class="link-btn" data-action="clearSearches">Effacer</button></div><div class="history-chips">${state.searches.slice(0,8).map(x=>`<button data-action="useSearch" data-q="${esc(x)}">⌕ ${esc(x)}</button>`).join("")}</div></div>`:""}
+  </section>`;
+}
+function searchRowPremium(r){
+  const clickable=r.kind==="Personnes"?`data-action="openSearchResult" data-kind="Personnes" data-id="${r.obj.id}"`:r.kind==="Pages"?`data-action="openSearchResult" data-kind="Pages" data-id="${r.obj.id}"`:`data-action="openSearchResult" data-kind="${r.kind}" data-id="${r.obj.id}"`;
+  const media=r.obj?.media?`<img class="search-result-media" src="${esc(r.obj.media)}" alt="">`:"";
+  return `<article class="search-result-card" ${clickable}>${r.kind==="Personnes"?avatar(r.obj,"avatar search-result-avatar"):r.kind==="Pages"?`<span class="avatar search-result-icon">▤</span>`:`<span class="avatar search-result-icon">${r.kind==="Reels"?"◆":"▣"}</span>`}<div class="search-result-main"><b>${esc(r.title)} ${r.obj?.verified?verified(r.obj):""}</b><small>${esc(r.sub)}</small></div>${media}<button class="btn secondary search-open-btn" data-action="openSearchResult" data-kind="${r.kind}" data-id="${r.obj.id}">Ouvrir</button></article>`;
+}
+function searchRow(r){return `<div class="list-item">${r.kind==="Personnes"?avatar(r.obj):`<span class="avatar">${r.kind==="Pages"?"▤":r.kind==="Groupes"?"◉":"✦"}</span>`}<div class="list-main"><b>${esc(r.title)} ${r.obj?.verified?verified(r.obj):""}</b><small>${esc(r.sub)}</small></div><button class="btn secondary" data-action="openSearchResult" data-kind="${r.kind}" data-id="${r.obj.id}">Ouvrir</button></div>`}
+function profileVisibility(u,key,owner=false){
+  if(owner)return true;
+  const v=u?.privacy?.[key]||"Public";
+  if(v==="Public")return true;
+  if(v==="Amis")return isFriend(u.id);
+  return false;
+}
+function profileValue(u,key,fallback="Non renseigné"){
+  const owner=u?.id===state.current;
+  return profileVisibility(u,key,owner) ? (u?.[key]||fallback) : "Information privée";
+}
+function renderProfileMediaGrid(items, type="photo"){
+  if(!items.length) return `<div class="media-gallery-empty-v93"><span>${type==="photo"?"▧":type==="video"?"▶":"◆"}</span><b>Aucun contenu</b><small>Les ${type==="photo"?"photos":type==="video"?"vidéos":"reels"} apparaîtront ici.</small></div>`;
+  return `<div class="profile-media-grid-v93">${items.map(p=>{
+    const label=esc(p.title||type);
+    const click=`data-action="viewMedia" data-id="${p.id}"`;
+    if(type==="photo") return `<button class="profile-media-tile-v93" ${click} aria-label="${label}"><img src="${esc(p.media)}" alt="${label}"><span class="media-tile-shade-v93">▧</span></button>`;
+    if(type==="video") return `<button class="profile-media-tile-v93 profile-media-video-v93" ${click} aria-label="${label}"><video src="${esc(p.media)}" muted preload="metadata"></video><span class="media-tile-shade-v93">▶</span></button>`;
+    return `<button class="profile-media-tile-v93 profile-media-video-v93" ${click} aria-label="${label}"><video src="${esc(p.media)}" muted preload="metadata"></video><span class="media-tile-shade-v93">◆</span></button>`;
+  }).join("")}</div>`;
+}
+
+function renderProfile(u){
+  u=u||findUser(profileViewingId||state.current)||me();
+  if(!u)return `<div class="empty">Profil introuvable.</div>`;
+  const posts=state.posts.filter(p=>p.ownerType!=="page"&&p.ownerId===u.id&&canSeePost(p));
+  const photos=posts.filter(p=>["photo","image"].includes(p.mediaType));
+  const reels=posts.filter(p=>p.mediaType==="reel" || p.mediaType==="video");
+  const videos=[];
+  const friendsList=state.friendships.filter(f=>f.a===u.id||f.b===u.id).map(f=>findUser(f.a===u.id?f.b:f.a)).filter(Boolean);
+  const friends=friendsList.length;
+  const followers=state.follows.filter(f=>f.to===u.id).length;
+  const following=state.follows.filter(f=>f.from===u.id).length;
+  const own=u.id===state.current, admin=u.id===ADMIN_ID;
+  const coverStyle=u.cover?`background-image:url('${esc(u.cover)}')`:"";
+  const followExists=state.follows.some(f=>f.from===state.current&&f.to===u.id);
+  const pseudo=u.pseudo?` (${esc(u.pseudo)})`:"";
+  const content=(()=>{
+    if(profileTab==="about") return `<div class="profile-only-panel premium-about-panel"><div class="profile-section-title"><span>À propos</span><small>Informations & confidentialité</small></div>
+      <div class="about-premium-grid-v94">
+        <article class="about-info-card-v94"><span class="about-icon-v94">⌖</span><div><b>Localisation</b><strong>${esc(profileValue(u,"location","Non renseignée"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">◎</span><div><b>Date de naissance</b><strong>${esc(profileValue(u,"birth","Non renseignée"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">◌</span><div><b>Genre</b><strong>${esc(profileValue(u,"gender","Non renseigné"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">☎</span><div><b>Téléphone</b><strong>${esc(profileValue(u,"phone","Non renseigné"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">✉</span><div><b>E-mail</b><strong>${esc(profileValue(u,"email","Non renseigné"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">▣</span><div><b>Pays</b><strong>${esc(profileValue(u,"country","Non renseigné"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">♥</span><div><b>Situation amoureuse</b><strong>${esc(profileValue(u,"relationshipStatus","Non renseignée"))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">✦</span><div><b>Bio</b><strong>${esc(profileValue(u,"bio","Bienvenue dans l'univers Tafaß."))}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">◷</span><div><b>Membre depuis</b><strong>${esc(u.createdAt||"Non renseigné")}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">♧</span><div><b>Amis</b><strong>${friends}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">◉</span><div><b>Abonnés</b><strong>${followers}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">➜</span><div><b>Suivis</b><strong>${following}</strong></div></article>
+        <article class="about-info-card-v94"><span class="about-icon-v94">🔒</span><div><b>Confidentialité</b><strong>${own?"Vous contrôlez la visibilité de vos informations.":"Selon les réglages de confidentialité de ce profil."}</strong>${own?`<button class="btn secondary about-manage-btn-v94" data-action="editProfile">Gérer les informations</button>`:""}</div></article>
+      </div></div>`;
+    if(profileTab==="friends") return `<div class="profile-only-panel premium-about-panel"><div class="profile-section-title"><span>Amis</span><small>${friends}</small></div><div class="profile-friends-grid">${friendsList.length?friendsList.map(friendSuggestionPremium).join(""):`<div class="empty-state"><b>Aucun ami</b><span>Ce profil n'a pas encore d'ami affichable.</span></div>`}</div></div>`;
+    const list=profileTab==="photos"?photos:profileTab==="reels"?reels:posts;
+    const title=profileTab==="photos"?"Photos":profileTab==="reels"?"Reels":"Publications";
+    const mediaType=profileTab==="photos"?"photo":profileTab==="reels"?"reel":null;
+    const body=mediaType?renderProfileMediaGrid(list,mediaType):(list.length?list.map(renderPost).join(""):`<div class="empty-state"><b>Aucun contenu</b><span>Les ${title.toLowerCase()} de ce profil apparaîtront ici.</span></div>`);
+    return `<div class="profile-only-panel profile-content-panel"><div class="profile-section-title"><span>${title}</span><small>${list.length}</small></div>${body}</div>`;
+  })();
+  return `<section class="social-profile profile-premium">
+    <div class="social-cover" style="${coverStyle}"><div class="cover-shade"></div>${own?`<button class="profile-camera cover-camera" data-action="editCover">📷</button>`:""}</div>
+    <div class="social-profile-body profile-identity-under-avatar">
+      <div class="profile-avatar-wrap"><div class="profile-avatar-large">${u.avatar?`<img src="${esc(u.avatar)}" alt="Photo de profil">`:esc((displayName(u)[0]||"T").toUpperCase())}</div>${own?`<button class="profile-camera avatar-camera" data-action="editProfile">📷</button>`:""}</div>
+      <div class="profile-name-block profile-name-below-avatar"><div class="profile-type-line">${typePill(u)} ${verified(u)}</div><h1>${esc(displayName(u))}${pseudo}</h1><div class="profile-handle">${profileVisibility(u,"username",own)?`@${esc(u.username||"utilisateur")}`:"Identifiant privé"}</div></div>
+      <p class="social-bio">${esc(profileValue(u,"bio","Bienvenue dans l'univers Tafaß."))}</p>
+      <div class="profile-details">${profileVisibility(u,"location",own)&&u.location?`<span>⌖ ${esc(u.location)}</span>`:""}<span>✦ ${u.type==="page"?"Page":"Compte"}</span></div>
+      <div class="profile-actions-premium">${own?`<button class="btn primary profile-main-btn" data-action="createStory">＋ Ajouter une story</button><button class="btn secondary profile-main-btn" data-action="editProfile">✎ Modifier le profil</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:admin?`<button class="btn primary profile-main-btn" data-action="follow" data-id="${u.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:`<button class="btn primary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button>${friendActionState(u.id)==="friends"?`<button class="btn secondary profile-main-btn" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`:friendActionState(u.id)==="sent"?`<button class="btn secondary profile-main-btn" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id).id}">Invitation envoyée</button>`:friendActionState(u.id)==="received"?`<button class="btn secondary profile-main-btn" data-action="acceptFriend" data-id="${incomingFriendRequest(u.id).id}">Accepter l'invitation</button>`:`<button class="btn secondary profile-main-btn" data-action="addFriend" data-id="${u.id}">＋ Ajouter</button>`}<button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`}</div>
+      <div class="profile-stats-premium"><button data-action="profileTab" data-tab="friends"><b>${friends}</b><span>Amis</span></button><div><b>${followers}</b><span>Abonnés</span></div><div><b>${following}</b><span>Suivis</span></div></div>
+    </div>
+    <nav class="profile-tabs-premium"><button class="${profileTab==="posts"?"active":""}" data-action="profileTab" data-tab="posts">Publications</button><button class="${profileTab==="photos"?"active":""}" data-action="profileTab" data-tab="photos">Photos</button><button class="${profileTab==="reels"?"active":""}" data-action="profileTab" data-tab="reels">Reels</button><button class="${profileTab==="friends"?"active":""}" data-action="profileTab" data-tab="friends">Amis</button><button class="${profileTab==="about"?"active":""}" data-action="profileTab" data-tab="about">À propos</button></nav>
+    <div class="profile-single-content">${content}</div>
+  </section>`;
+}
+function pageContextBar(){
+  const p=state.pageMode?findPage(state.pageMode):null;
+  if(!p)return "";
+  return `<div class="page-context-bar"><div class="page-context-brand">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:`<span>${esc((p.name||"P")[0])}</span>`}<div><b>${esc(p.name)}</b><small>PAGE · Mode Page</small></div></div><div class="page-context-nav"><button data-action="pageModeHome">Actualités</button><button data-action="pageModeMessages">Messages</button><button data-action="pageModeVideos">Reels</button><button data-action="pageModeNotifications">Notifications</button><button data-action="pageModeSearch">Rechercher</button><button data-action="pageModeMenu">Menu</button></div></div>`;
+}
+function renderNotifications(){
+  const pageBar=pageContextBar();
+  const list=state.notifications.filter(n=>n.userId===state.current).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const unread=list.filter(n=>!n.read).length;
+  const iconMap={like:'♥',reaction:'✦',comment:'◌',reply:'↩',share:'↗',mention:'@',friend:'♧',follow:'＋',message:'✉',group:'◆',page:'▣',badge:'✓',security:'⌁'};
+  const typeMap={like:'J’aime',reaction:'Réaction',comment:'Commentaire',reply:'Réponse',share:'Partage',mention:'Mention',friend:'Invitation',follow:'Abonnement',message:'Message',group:'Groupe',page:'Page',badge:'Badge',security:'Sécurité'};
+  return `${pageBar}<section class="notifications-premium">
+    <div class="notification-hero"><div><span class="eyebrow">TAFAß</span><h1>Notifications</h1><small>${unread?`${unread} nouvelle${unread>1?'s':''}`:'Tout est à jour'}</small></div><div class="notification-hero-actions"><button class="icon-btn" data-action="markAllRead" title="Tout lire">✓</button><button class="icon-btn" data-action="clearNotifications" title="Effacer">⌫</button></div></div>
+    <div class="notification-filter"><span class="active">Toutes</span><span>${unread?'Non lues '+unread:'À jour'}</span></div>
+    <div class="notification-stack">${list.length?list.map(n=>{const actor=findUser(n.actorId)||me();const kind=n.type||'activity';return `<article class="notification-card ${n.read?'':'is-unread'}" data-action="readNotif" data-id="${n.id}"><div class="notification-icon notification-${esc(kind)}">${iconMap[kind]||'•'}</div>${avatar(actor,'avatar notif-avatar')}<div class="notification-content"><div class="notification-line"><b>${esc(displayName(actor))}</b><span class="notification-type">${esc(typeMap[kind]||'Activité')}</span></div><p>${esc(n.text)}</p><small>${timeAgo(n.createdAt)}</small></div><span class="notification-dot ${n.read?'read':''}"></span></article>`}).join(''):`<div class="notification-empty"><div class="notification-empty-icon">✓</div><b>Aucune notification</b><span>Vous êtes à jour.</span></div>`}</div>
+  </section>`;
+}
+function renderMessages(){
+  const pageBar=pageContextBar();
+  const mine=state.conversations.filter(c=>c.members?.includes(state.current));
+  if(!activeConversation&&mine.length)activeConversation=mine[0].id;
+  const conv=mine.find(c=>c.id===activeConversation);
+  const stories=state.stories.filter(s=>new Date(s.expiresAt)>Date.now()&&(s.ownerId===state.current||isFriend(s.ownerId))).slice(0,12);
+  return `${pageBar}<section class="messages-premium">
+    <div class="premium-page-head message-title-head"><div><h1>Messages</h1></div><div class="message-head-actions"><button class="icon-btn" data-action="messageSearch">⌕</button><button class="icon-btn message-new-plus" data-action="newConversation">＋</button></div></div>
+    <div class="message-stories">${stories.map(s=>{const u=findUser(s.ownerId);return `<button class="message-story" data-action="viewStory" data-id="${s.id}"><span class="story-ring">${avatar(u,"avatar message-story-avatar")}</span><b>${esc(displayName(u).split(" ")[0])}</b><small>${isOnline(u)?"En ligne":""}</small></button>`}).join("")}</div>
+    <div class="message-shell-premium"><aside class="conversation-panel"><div class="conversation-search"><span>⌕</span><input id="conversationSearch" placeholder="Rechercher une personne"></div><div id="messagePeopleResults" class="message-people-results"></div><div class="conversation-list">${mine.length?mine.map(renderConversationPremium).join(""):`<div class="empty-state"><b>Aucune conversation</b><span>Commencez avec une personne.</span></div>`}</div></aside><section class="chat-panel-premium">${conv?renderChatPremium(conv):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Vos messages</b><span>Sélectionnez une conversation.</span></div>`}</section></div>
+  </section>`;
+}
+function renderConversationPremium(c){
+  const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const last=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))[0];
+  return `<button class="conversation-row ${activeConversation===c.id?"active":""}" data-action="selectConversation" data-id="${c.id}">${avatar(other||{name:c.name},"avatar")}<span class="conversation-copy"><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${esc(last?.text||last?.file?.name||"Nouvelle conversation")}</small></span>${other&&isOnline(other)?`<i class="online-dot"></i>`:""}<i>›</i></button>`;
+}
+function messageAttachmentHtml(file){
+  if(!file)return "";
+  const data=file.data||"";
+  const safe=esc(data);
+  if(file.type?.startsWith("image/")&&data)return `<div class="chat-media-card"><img src="${safe}" alt="${esc(file.name||"Image")}"><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
+  if(file.type?.startsWith("video/")&&data)return `<div class="chat-media-card"><video src="${safe}" controls></video><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
+  return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(file.name||"Fichier")}</b><small>${esc(file.type||"fichier")} · ${file.size?Math.ceil(file.size/1024)+" Ko":""}</small></div><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩</button></div>`;
+}
+function renderChatPremium(c){
+  const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const msgs=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+  return `<header class="chat-top-premium">${avatar(other||{name:c.name},"avatar") }<div><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${c.type==="group"?`${c.members.length} membres`:isOnline(other)?"En ligne":"Hors ligne"}</small></div><div class="chat-tools"><button class="icon-btn" data-action="voiceCall" data-id="${other?.id||c.id}">☎</button><button class="icon-btn" data-action="voiceInvite" data-id="${c.id}">🎙</button></div></header>
+  <div class="chat-body-premium">${msgs.length?msgs.map(m=>`<div class="bubble-premium ${m.from===state.current?"mine":""}">${m.files?.map(messageAttachmentHtml).join("")||messageAttachmentHtml(m.file)}${m.text?`<div>${esc(m.text)}</div>`:""}<small>${timeAgo(m.createdAt)}</small></div>`).join(""):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Aucun message</b><span>Écrivez votre premier message.</span></div>`}</div>
+  <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile">＋</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx"><div class="chat-input-shell"><input name="text" placeholder="Écrire un message..."><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn">➤</button></form>`;
+}
+function renderPages(){
+  const mine=state.pages.filter(p=>p.ownerId===state.current);
+  return `${routeBackBar("Menu","menu")}<section class="pages-premium">
+    <div class="premium-page-head">
+      <div><span class="eyebrow">ESPACE CRÉATEUR</span><h1>Pages</h1><p>Vos Pages professionnelles, artistes, marques et communautés.</p></div>
+      <button class="btn primary" data-action="createPage">＋ Créer une Page</button>
+    </div>
+    <div class="page-grid-premium">${mine.map(p=>`<article class="page-card-premium">
+      <div class="page-card-cover" style="${p.cover?`background-image:url('${esc(p.cover)}')`:""}"><span class="page-label">PAGE</span></div>
+      <div class="page-card-body">
+        <div class="page-card-avatar">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc((p.name||"P")[0])}</div>
+        <h2>${esc(p.name)} ${verified(p)}</h2>
+        <span class="page-category">${esc(p.category||"Page")}</span>
+        <p>${esc(p.description||"Votre Page Tafaß.")}</p>
+        <div class="page-mini-stats"><span><b>${p.followers||0}</b> followers</span><span><b>${state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page").length}</b> publications</span></div>
+        <div class="page-card-actions"><button class="btn primary" data-action="viewPage" data-id="${p.id}">Ouvrir</button><button class="btn secondary" data-action="switchPage" data-id="${p.id}">Passer à ma Page</button></div>
+      </div>
+    </article>`).join("")||`<div class="empty-state"><b>Vous n'avez pas encore de Page</b><span>Créez une Page pour une marque, une entreprise, un artiste ou un projet.</span></div>`}</div>
+    ${state.pageMode?`<div class="page-mode-banner"><b>Mode Page actif</b><span>${esc(findPage(state.pageMode)?.name||"")}</span><button class="btn secondary" data-action="leavePageMode">Revenir à mon compte</button></div>`:""}
+  </section>`;
+}
+function renderPageView(id){
+  const p=findPage(id);if(!p)return`<div class="empty">Page introuvable.</div>`;
+  const posts=state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page"&&canSeePost(x));
+  const photos=posts.filter(x=>["photo","image"].includes(x.mediaType));
+  const videos=[];
+  const reels=posts.filter(x=>x.mediaType==="reel" || x.mediaType==="video");
+  const followers=state.follows.filter(f=>f.to===p.id).length || p.followers || 0;
+  const following=state.follows.filter(f=>f.from===p.id).length || 0;
+  const own=p.ownerId===state.current;
+  const followExists=state.follows.some(f=>f.from===state.current&&f.to===p.id);
+  let list=pageTab==="photos"?photos:pageTab==="reels"?reels:posts;
+  let content;
+  if(pageTab==="about"){
+    content=`<div class="page-only-panel page-about-v90"><div class="profile-section-title"><span>À propos</span><small>Informations de la Page</small></div><div class="page-about-grid-v90">
+      <article><span>◎</span><div><b>Catégorie</b><strong>${esc(p.category||"Page")}</strong></div></article>
+      <article><span>@</span><div><b>Identifiant</b><strong>@${esc(p.username||"page")}</strong></div></article>
+      <article><span>✉</span><div><b>E-mail</b><strong>${esc(p.email||"Non renseigné")}</strong></div></article>
+      <article><span>☎</span><div><b>Téléphone</b><strong>${esc(p.phone||"Non renseigné")}</strong></div></article>
+      <article><span>⌖</span><div><b>Adresse</b><strong>${esc(p.address||"Non renseignée")}</strong></div></article>
+      <article><span>◷</span><div><b>Horaires</b><strong>${esc(p.hours||"Non renseignés")}</strong></div></article>
+      <article><span>◇</span><div><b>Site web</b><strong>${esc(p.website||"Non renseigné")}</strong></div></article>
+      <article><span>▣</span><div><b>Services</b><strong>${esc(p.services||"Non renseignés")}</strong></div></article>
+      <article class="full"><span>✦</span><div><b>Description</b><strong>${esc(p.description||"Cette Page n'a pas encore ajouté de description.")}</strong></div></article>
+      <article class="full"><span>◉</span><div><b>Audience</b><strong>${followers} abonnés · ${following} suivis · ${posts.length} publications</strong></div></article>
+    </div></div>`;
+  } else if(pageTab==="friends"){
+    content=`<div class="page-only-panel page-about-v90"><div class="profile-section-title"><span>Communauté</span><small>${followers} abonnés</small></div><div class="empty-state"><b>Les abonnés de la Page</b><span>La liste des abonnés sera disponible avec les données réelles.</span></div></div>`;
+  } else {
+    const title=pageTab==="photos"?"Photos":pageTab==="reels"?"Reels":"Publications";
+    const mediaType=pageTab==="photos"?"photo":pageTab==="reels"?"reel":null;
+    const body=mediaType?renderProfileMediaGrid(list,mediaType):(list.length?list.map(renderPost).join(""):`<div class="empty-state"><b>Aucun contenu</b><span>Les ${title.toLowerCase()} de cette Page apparaîtront ici.</span></div>`);
+    content=`<div class="page-only-panel page-content-v90"><div class="profile-section-title"><span>${title}</span><small>${list.length}</small></div>${body}</div>`;
+  }
+  return `<section class="page-view-v90">
+    <div class="page-nav-v90"><button data-action="pageModeHome">Actualités</button><button data-action="pageModeMessages">Messages</button><button data-action="pageModeVideos">Reels</button><button data-action="pageModeNotifications">Notifications</button><button data-action="pageModeSearch">Rechercher</button><button data-action="pageModeMenu">Menu</button></div>
+    <div class="page-cover-v90" style="${p.cover?`background-image:url('${esc(p.cover)}')`:""}"><div class="cover-shade"></div>${own?`<button class="profile-camera cover-camera" data-action="editPage" data-id="${p.id}">📷</button>`:""}</div>
+    <div class="page-identity-v90"><div class="page-avatar-v90">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc((p.name||"P")[0])}</div><div class="page-title-v90"><div><span class="type-pill">PAGE</span> ${verified(p)}</div><h1>${esc(p.name)}</h1><strong>@${esc(p.username||"page")}</strong><p>${esc(p.description||"")}</p></div>
+      <div class="page-actions-v90">${own?`<button class="btn primary" data-action="openComposer" data-kind="post">＋ Publier</button><button class="btn secondary" data-action="switchPage" data-id="${p.id}">Mode Page</button><button class="icon-btn" data-action="pageMore" data-id="${p.id}">•••</button>`:`<button class="btn primary" data-action="followPage" data-id="${p.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary" data-action="messagePage" data-id="${p.id}">◈ Message</button><button class="icon-btn" data-action="marketMore" data-id="${p.id}">•••</button>`}</div>
+      <div class="profile-stats-premium"><div><b>${followers}</b><span>Abonnés</span></div><div><b>${following}</b><span>Suivis</span></div><div><b>${posts.length}</b><span>Publications</span></div></div>
+    </div>
+    <nav class="profile-tabs-premium page-tabs-v90"><button class="${pageTab==="posts"?"active":""}" data-action="pageTab" data-tab="posts">Publications</button><button class="${pageTab==="photos"?"active":""}" data-action="pageTab" data-tab="photos">Photos</button><button class="${pageTab==="reels"?"active":""}" data-action="pageTab" data-tab="reels">Reels</button><button class="${pageTab==="about"?"active":""}" data-action="pageTab" data-tab="about">À propos</button></nav>
+    <div class="profile-single-content">${content}</div>
+  </section>`;
+}
+function renderGroups(){
+  const gs=state.groups||[];
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Rejoignez des communautés ou créez votre propre espace privé.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
+  <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input placeholder="Rechercher un groupe"></div><button class="hub-filter-v90">Tous</button><button class="hub-filter-v90">Privés</button><button class="hub-filter-v90">Publics</button></div>
+  <div class="hub-grid-v90">${gs.map(g=>`<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||"Public")}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${g.members?.length||0} membres</span><span>${g.privacy==="Privé"?"Groupe privé":"Communauté"}</span></div><button class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button></div></article>`).join("")||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
+}
+function renderMedia(type){
+  const pageBar=pageContextBar();
+  const isVideo=false; type="reel"; let posts=state.posts.filter(p=>(p.mediaType==="reel"||p.mediaType==="video")&&canSeePost(p));
+  if(mediaFilter==="following")posts=posts.filter(p=>state.follows.some(f=>f.from===state.current&&f.to===p.ownerId)); if(mediaFilter==="popular")posts=[...posts].sort((a,b)=>(b.shares||0)-(a.shares||0)); if(mediaFilter==="saved")posts=posts.filter(p=>state.saved.includes(p.id));
+  const q=(window.mediaSearch||"").toLowerCase().trim(); if(q)posts=posts.filter(p=>{const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);return `${displayName(o)} ${o?.username||""} ${p.title||""} ${p.text||""}`.toLowerCase().includes(q)});
+  return `${pageBar}<section class="media-hub premium-page"><div class="media-hero"><div><h1>Reels</h1></div><button class="btn primary" data-action="openComposer" data-kind="reel">＋</button></div>
+  ${isVideo?`<div class="media-search"><span>⌕</span><input id="mediaSearchInput" value="${esc(window.mediaSearch||"")}" placeholder="Rechercher une personne ou une vidéo"><button class="clear-search-premium" data-action="clearMediaSearch" aria-label="Effacer la recherche">Effacer</button></div>`:""}
+  <div class="media-tabs"><button class="${mediaFilter==="all"?"active":""}" data-action="mediaFilter" data-filter="all">Tout</button><button class="${mediaFilter==="following"?"active":""}" data-action="mediaFilter" data-filter="following">Suivis</button><button class="${mediaFilter==="popular"?"active":""}" data-action="mediaFilter" data-filter="popular">Populaires</button><button class="${mediaFilter==="saved"?"active":""}" data-action="mediaFilter" data-filter="saved">Enregistrés</button></div>
+  <div class="media-grid">${posts.length?posts.map(renderPost).join(""):`<div class="empty-state media-empty"><div class="empty-icon">◆</div><b>Aucun contenu</b><button class="btn primary" data-action="openComposer" data-kind="reel">Publier</button></div>`}</div></section>`;
+}
+function renderSaved(){
+  const ps=state.posts.filter(p=>state.saved.includes(p.id));
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COLLECTION</span><h1>Enregistrés</h1><p>Vos publications, photos, vidéos et Reels sauvegardés.</p></div><div class="saved-count-v90">${ps.length}</div></div>
+  <div class="saved-filter-v90"><button class="active">Tout</button><button>Photos</button><button>Reels</button></div>
+  <div class="saved-stack-v90">${ps.length?ps.map(renderPost).join(""):`<div class="empty-state"><div class="empty-icon">🔖</div><b>Aucun contenu enregistré</b><span>Utilisez Enregistrer sur une publication pour la retrouver ici.</span></div>`}</div></section>`;
+}
+function renderMarketplace(){
+  let items=state.marketplace||[]; if(marketFilter==="products")items=items.filter(x=>x.kind==="Produit"||x.kind==="Boutique"); if(marketFilter==="services")items=items.filter(x=>x.kind==="Service");
+  const q=(window.marketSearch||"").toLowerCase().trim(); if(q)items=items.filter(x=>`${x.title} ${x.description} ${x.location}`.toLowerCase().includes(q));
+  const sellers=[...new Set((state.marketplace||[]).map(x=>x.ownerId))].map(findUser).filter(Boolean).filter(u=>u.id!==state.current).slice(0,6);
+  return `<section class="marketplace-hub premium-page"><div class="market-hero"><div><h1>Marketplace</h1></div><button class="btn primary" data-action="createMarketplace">＋</button></div><div class="market-toolbar"><div class="market-search"><span>⌕</span><input id="marketSearch" value="${esc(window.marketSearch||"")}" placeholder="Rechercher une vente ou un service"></div><button class="filter ${marketFilter==="all"?"active":""}" data-action="marketFilter" data-filter="all">Tout</button><button class="filter ${marketFilter==="products"?"active":""}" data-action="marketFilter" data-filter="products">Ventes</button><button class="filter ${marketFilter==="services"?"active":""}" data-action="marketFilter" data-filter="services">Services</button></div>
+  <div class="market-grid-premium">${items.length?items.map(item=>`<article class="market-item-card"><div class="market-item-top"><span class="type-pill">${esc(item.kind||"Produit")}</span><button class="icon-btn market-more" data-action="marketMore" data-id="${item.id}" title="Plus">•••</button></div><div class="market-item-media media-click" data-action="viewMarketMedia" data-id="${item.id}">${item.image?`<img src="${esc(item.image)}" alt="${esc(item.title)}"><button class="media-download" data-action="downloadMarketMedia" data-id="${item.id}" onclick="event.stopPropagation()">⇩</button>`:`<span>◇</span>`}</div><div class="market-item-body"><h3>${esc(item.title)}</h3><strong>${esc(item.price||"Prix à définir")}</strong><p>${esc(item.description||"")}</p><small>${esc(item.location||"Madagascar")}</small><button class="btn primary wide" data-action="openMarketItem" data-id="${item.id}">Voir</button></div></article>`).join(""):`<div class="empty-state market-empty"><div class="empty-icon">◇</div><b>Aucune annonce</b><button class="btn primary" data-action="createMarketplace">Vendre</button></div>`}</div>
+  ${sellers.length?`<div class="market-sellers card"><div class="section-title"><b>Vendeurs suggérés</b></div><div class="seller-strip">${sellers.map(u=>`<button class="seller-chip" data-action="viewProfile" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>${isOnline(u)?"En ligne":"Vendeur"}</small></span></button>`).join("")}</div></div>`:""}</section>`;
+}
+function renderEvents(){
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉ</span><h1>Événements</h1><p>Découvrez les événements et créez vos propres rendez-vous.</p></div><button class="btn primary" data-action="createEvent">＋ Créer</button></div>
+  <div class="event-filter-v90"><button class="active">À venir</button><button>Mes événements</button><button>Invitations</button><button>Passés</button></div>
+  <div class="event-card-v90"><div class="event-date-v90"><b>À VENIR</b><strong>TAFAß</strong></div><div><h2>Votre agenda est prêt</h2><p>Les événements créés ou auxquels vous participez apparaîtront ici.</p><button class="btn secondary" data-action="createEvent">Créer un événement</button></div></div></section>`;
+}
+function openAccountSwitcher(){
+  const current=me();
+  const accounts=(state.users||[]).filter(u=>u.type!=="page");
+  modal("Changer un autre compte",`
+    <div class="account-switcher-v86">
+      <div class="account-switcher-current-v86">
+        ${avatar(current,"avatar lg")}
+        <div><strong>${esc(displayName(current))}</strong><small>Compte actuellement utilisé</small></div>
+        <span class="active-pill-v86">ACTIF</span>
+      </div>
+      <div class="account-switcher-title-v86">Vos comptes</div>
+      <div class="account-switcher-list-v86">
+        ${accounts.map(u=>`
+          <button type="button" class="account-switch-row-v86 ${u.id===state.current?"is-active":""}" data-action="selectAccount" data-id="${esc(u.id)}">
+            ${avatar(u,"avatar")}
+            <span class="account-switch-copy-v86"><strong>${esc(displayName(u))}</strong><small>@${esc(u.username||"")} · ${u.id===state.current?"Compte actuel":"Changer de compte"}</small></span>
+            ${u.id===state.current?'<span class="account-check-v86">✓</span>':'<span class="menu-arrow-v86">›</span>'}
+          </button>`).join("")}
+      </div>
+      <button type="button" class="add-account-v86" data-action="addAccount">
+        <span>＋</span><strong>Ajouter un autre compte</strong><small>Créer ou connecter un autre compte</small>
+      </button>
+    </div>`);
+}
+function renderMenu(){
+  const pageBar=pageContextBar();
+  const u=me();
+  const items=MENU_ITEMS.filter(([id])=>id!=="admin"||u?.id===ADMIN_ID);
+  return `${routeBackBar("Actualités","home")}${pageBar}<section class="menu-premium-page menu-v86">
+    <div class="menu-identity-v86">
+      <div class="menu-profile-v86" data-route="profile">
+        ${avatar(u,"avatar lg")}
+        <div class="menu-profile-copy-v86">
+          <strong>${esc(displayName(u))}</strong>
+          <span>@${esc(u?.username||"")}</span>
+          <small>${u?.type==="page"?"PAGE":"COMPTE"} ${u?.verified?"· VÉRIFIÉ":""}</small>
+        </div>
+        <span class="menu-arrow-v86">›</span>
+      </div>
+      <button class="menu-switch-v86" data-action="switchAccount" type="button">
+        <span class="switch-icon-v86">⇄</span>
+        <span><strong>Changer un autre compte</strong><small>Basculer vers un compte enregistré</small></span>
+        <span class="menu-arrow-v86">›</span>
+      </button>
+    </div>
+    <div class="menu-grid-premium-v86">${items.map(([id,icon,label])=>{
+      if(id==="switchAccount") return "";
+      if(id==="logout") return `<button class="menu-card-v86 menu-danger" data-action="logout" type="button"><span class="menu-icon-v86">${icon}</span><span class="menu-copy-v86"><strong>${label}</strong></span><span class="menu-arrow-v86">›</span></button>`;
+      const actionAttr=id==="badge"?`data-action="openBadge"`:``;
+      return `<button class="menu-card-v86" data-route="${id}" ${actionAttr} type="button"><span class="menu-icon-v86">${icon}</span><span class="menu-copy-v86"><strong>${label}</strong></span><span class="menu-arrow-v86">›</span></button>`;
+    }).join("")}</div>
+  </section>`;
+}
+function premiumSettingsPage(title,subtitle,groups){
+  return `${routeBackBar("Menu","menu")}<section class="settings-premium-v90">
+    <div class="settings-hero-v90"><span class="settings-hero-icon">⚙</span><div><span class="eyebrow">TAFAß · RÉGLAGES</span><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div></div>
+    ${groups.map((g,gi)=>`<div class="settings-group-v90"><div class="settings-group-head-v90"><span>${g.icon||"✦"}</span><div><b>${esc(g.title)}</b><small>${esc(g.help||"Configurez vos préférences")}</small></div></div>
+      <div class="settings-cards-v90">${g.items.map((x,i)=>{
+        const action=x.action||"settingChoice";
+        let current=state.settings?.[`${g.key||title}-${i}`] || (x.options?.[0]||""); if((g.key||title)==="preferences"&&i===0) current=state.settings?.dark?"Sombre":"Clair"; if(((g.key||title)==="preferences"&&i===1)||((g.key||title)==="langue"&&i===0)) current=state.settings?.language||"Français";
+        return `<button type="button" class="setting-row-v91" data-action="${action}" data-setting-key="${esc(g.key||title)}-${i}" data-setting-options='${esc(JSON.stringify(x.options||[]))}' data-setting-label="${esc(x.label)}"><span class="setting-row-icon">${x.icon||["◉","✓","⌁","▣","◇"][i%5]}</span><span class="setting-row-copy"><b>${esc(x.label)}</b><small>${esc(x.desc||"")}</small></span><span class="setting-current-v91">${esc(current)}</span><strong class="setting-arrow-v91">›</strong></button>`;
+      }).join("")}</div>
+    </div>`).join("")}
+  </section>`;
+}
+function renderSettings(){
+  return premiumSettingsPage("Paramètres","Un espace unique pour gérer votre compte, vos préférences et votre expérience Tafaß.",[
+    {icon:"◎",title:"Compte",key:"compte",help:"Informations et gestion du compte",items:[
+      {label:"Informations personnelles",desc:"Nom, date de naissance, e-mail et téléphone",options:["Modifier"],action:"editPersonalInfo"},
+      {label:"Mot de passe",desc:"Modifier votre mot de passe",options:["Modifier"],action:"changePassword"},
+      {label:"Notifications",desc:"Préférences des alertes",options:["Ouvrir"],action:"openNotificationSettings"}
+    ]},
+    {icon:"◌",title:"Préférences",key:"preferences",items:[
+      {label:"Thème",desc:"Choisir l'apparence de Tafaß",options:["Clair","Sombre","Système"]},
+      {label:"Langue",desc:"Langue de l'interface",options:APP_LANGUAGES.map(x=>x[0])},
+      {label:"Lecture automatique",desc:"Vidéos et médias",options:["Activée","Wi-Fi uniquement","Désactivée"]}
+    ]},
+    {icon:"♧",title:"Contenu",key:"contenu",items:[
+      {label:"Publications suggérées",desc:"Contenu recommandé dans Actualités",options:["Activées","Désactivées"]},
+      {label:"Vidéos",desc:"Préférences Vidéos et Reels",options:["Personnalisées","Activées","Désactivées"]},
+      {label:"Marketplace",desc:"Ventes et recommandations",options:["Activé","Désactivé"]}
+    ]}
+  ]);
+}
+function renderPrivacy(){
+  return premiumSettingsPage("Confidentialité","Choisissez précisément qui peut voir vos informations et interagir avec vous.",[
+    {icon:"◌",title:"Visibilité du profil",key:"profil",help:"Chaque réglage peut être modifié indépendamment",items:[
+      {label:"Profil",desc:"Qui peut voir votre profil",options:["Public","Amis","Moi uniquement"]},
+      {label:"Photo de profil",desc:"Visibilité de votre photo",options:["Public","Amis","Moi uniquement"]},
+      {label:"Photo de couverture",desc:"Visibilité de votre couverture",options:["Public","Amis","Moi uniquement"]},
+      {label:"Bio",desc:"Qui peut voir votre bio",options:["Public","Amis","Moi uniquement"]},
+      {label:"Localisation",desc:"Ville et localisation",options:["Public","Amis","Moi uniquement"]},
+      {label:"Situation amoureuse",desc:"Informations personnelles",options:["Public","Amis","Moi uniquement"]},
+      {label:"Pseudo",desc:"Afficher le pseudo entre parenthèses",options:["Public","Amis","Moi uniquement"]}
+    ]},
+    {icon:"♧",title:"Interactions",key:"interactions",help:"Contrôlez les invitations et abonnements",items:[
+      {label:"Invitations d'amis",desc:"Qui peut vous envoyer une invitation",options:["Tout le monde","Amis d'amis","Personne"]},
+      {label:"Abonnements",desc:"Qui peut vous suivre",options:["Tout le monde","Amis","Personne"]},
+      {label:"Messages",desc:"Qui peut vous contacter",options:["Tout le monde","Amis","Personne"]},
+      {label:"Mentions",desc:"Qui peut vous identifier",options:["Tout le monde","Amis","Personne"]}
+    ]},
+    {icon:"▣",title:"Publications",key:"publications",help:"Réglez la visibilité par défaut",items:[
+      {label:"Nouvelles publications",desc:"Visibilité par défaut",options:["Public","Amis","Moi uniquement"]},
+      {label:"Stories",desc:"Audience par défaut",options:["Public","Amis","Personnalisée"]},
+      {label:"Reels et Vidéos",desc:"Audience par défaut",options:["Public","Amis","Moi uniquement"]}
+    ]}
+  ]);
+}
+function renderSecurity(){
+  return premiumSettingsPage("Sécurité","Protégez votre compte et surveillez les connexions.",[
+    {icon:"🔒",title:"Connexion",key:"connexion",items:[
+      {label:"Alertes de connexion",desc:"Être averti lors d'une nouvelle connexion",options:["Activées","Désactivées"]},
+      {label:"Vérification en deux étapes",desc:"Protection supplémentaire",options:["Activée","Désactivée"]},
+      {label:"Déconnexion des autres appareils",desc:"Fermer les sessions distantes",options:["Conserver","Déconnecter"]}
+    ]},
+    {icon:"⌁",title:"Sessions",key:"sessions",items:[
+      {label:"Appareil actuel",desc:"Navigateur · session locale",options:["ACTIF"]},
+      {label:"Historique des connexions",desc:"Consulter l'activité récente",options:["Voir","Masquer"]}
+    ]}
+  ]);
+}
+function renderAccounts(){
+  return premiumSettingsPage("Centre de comptes","Gérez les comptes Tafaß liés à votre expérience.",[
+    {icon:"◎",title:"Comptes",key:"comptes",items:[
+      {label:"Compte actuel",desc:`${displayName(me())} · @${me()?.username||""}`,options:["Actif"]},
+      {label:"Changer de compte",desc:"Basculer vers un autre compte enregistré",options:["Ouvrir"],action:"switchAccount"},
+      {label:"Ajouter un compte",desc:"Connecter un autre compte",options:["Ajouter"],action:"addAccount"},
+      {label:"Informations de connexion",desc:"E-mail et téléphone",options:["Gérer","Conserver"]}
+    ]}
+  ]);
+}
+function renderLanguage(){
+  return premiumSettingsPage("Langue","Choisissez la langue de votre interface Tafaß.",[
+    {icon:"文",title:"Langue de l'application",key:"langue",items:[
+      {label:"Interface",desc:"Langue principale de toute l'application",options:APP_LANGUAGES.map(x=>x[0])},
+      {label:"Contenu suggéré",desc:"Préférences linguistiques",options:APP_LANGUAGES.map(x=>x[0])}
+    ]}
+  ]);
+}
+function renderAccessibility(){
+  return premiumSettingsPage("Accessibilité","Adaptez Tafaß à vos besoins d'utilisation.",[
+    {icon:"♿",title:"Affichage",key:"accessibilite",items:[
+      {label:"Taille du texte",desc:"Adapter la taille de lecture",options:["Standard","Grand","Très grand"]},
+      {label:"Contraste",desc:"Renforcer la lisibilité",options:["Standard","Renforcé"]},
+      {label:"Animations",desc:"Réduire les mouvements",options:["Normales","Réduites"]},
+      {label:"Lecteur d'écran",desc:"Compatibilité renforcée",options:["Standard","Optimisée"]}
+    ]}
+  ]);
+}
+function renderDevices(){
+  return `${routeBackBar("Menu","menu")}<section class="settings-premium-v90"><div class="settings-hero-v90"><span class="settings-hero-icon">▣</span><div><span class="eyebrow">TAFAß · SÉCURITÉ</span><h1>Appareils</h1><p>Consultez les appareils connectés à votre compte.</p></div></div><div class="device-card-v90"><span>▣</span><div><b>Appareil actuel</b><small>Navigateur Android · session locale</small><em>ACTIF</em></div></div><div class="device-card-v90"><span>⌁</span><div><b>Gestion des sessions</b><small>La fermeture réelle des sessions sera reliée au backend.</small></div><button class="btn secondary" data-action="logout">Déconnexion</button></div></section>`;
+}
+function renderPayments(){
+  return `${routeBackBar("Menu","menu")}<section class="settings-premium-v90"><div class="settings-hero-v90"><span class="settings-hero-icon">◇</span><div><span class="eyebrow">TAFAß · FINANCE</span><h1>Paiements</h1><p>Historique local et informations liées aux services Tafaß.</p></div></div><div class="payment-panel-v90"><div class="payment-balance-v90"><small>Solde de démonstration</small><b>0 Ar</b><span>Aucun paiement réel n'est traité.</span></div><div class="payment-info-v90"><b>Badge bleu</b><span>25 000 Ar / mois</span><button class="btn primary" data-route="badge">Voir le Badge bleu</button></div></div><div class="settings-group-v90"><div class="settings-group-head-v90"><span>◇</span><div><b>Historique</b><small>Transactions enregistrées localement</small></div></div><div class="empty-state"><b>Aucune transaction</b><span>Les références saisies dans le prototype apparaîtront ici.</span></div></div></section>`;
+}
+function renderAds(){
+  return premiumSettingsPage("Publicités","Contrôlez la personnalisation et les préférences publicitaires.",[
+    {icon:"▥",title:"Préférences publicitaires",key:"publicites",items:[
+      {label:"Personnalisation",desc:"Publicités adaptées à votre activité",options:["Activée","Désactivée"]},
+      {label:"Activité utilisée pour les annonces",desc:"Utiliser votre activité locale",options:["Activée","Désactivée"]},
+      {label:"Annonces des Pages",desc:"Afficher les recommandations de Pages",options:["Activées","Désactivées"]},
+      {label:"Notifications publicitaires",desc:"Recevoir des informations promotionnelles",options:["Activées","Désactivées"]}
+    ]}
+  ]);
+}
+function openComposer(kind="post"){
+  const page=findPage(state.pageMode);
+  const publisher=page||me();
+  const label=page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
+  const accept=kind==="reel"?"video/*":kind==="photo"?"image/*":"image/*,video/*";
+  modal(label,`<form id="composerForm" class="premium-form composer-modal-v88">
+    <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${page?"PAGE":"COMPTE"}</small></div></div>
+    <label>Texte<textarea id="composerText" placeholder="Que voulez-vous partager ?"></textarea></label>
+    <div class="composer-type-grid"><button type="button" class="composer-type-choice ${kind==="post"?"active":""}" data-kind="post">✦ Publication</button><button type="button" class="composer-type-choice ${kind==="photo"?"active":""}" data-kind="photo">▣ Photo</button><button type="button" class="composer-type-choice ${kind==="reel"?"active":""}" data-kind="reel">◆ Reel</button></div>
+    <label>Visibilité<select id="composerVisibility"><option>Public</option><option>Amis</option><option>Sélection personnalisée</option><option>Moi uniquement</option></select></label>
+    <label>Identifier des amis<input id="composerTags" placeholder="@username, @username"></label>
+    <label>Photo / vidéo<input id="composerFile" type="file" accept="${accept}"><div id="composerMediaPreview" class="composer-media-preview hidden"></div><small class="field-help">${kind==="photo"?"Image · 15 Mo max":kind==="video"||kind==="reel"?"Vidéo · 100 Mo max":"Image · 15 Mo / Vidéo · 100 Mo"}</small></label>
+    <button id="composerSubmit" class="btn primary wide" type="submit">Publier</button>
+  </form>`);
+
+  document.querySelectorAll(".composer-type-choice").forEach(btn=>{
+    btn.onclick=()=>openComposer(btn.dataset.kind||"post");
+  });
+
+  const form=$("composerForm");
+  if(!form){ toast("Erreur: formulaire de publication introuvable."); return; }
+
+  const mediaInput=$("composerFile");
+  const mediaPreview=$("composerMediaPreview");
+  if(mediaInput && mediaPreview){
+    mediaInput.addEventListener("change",()=>{
+      const file=mediaInput.files?.[0];
+      if(!file){ mediaPreview.innerHTML=""; mediaPreview.classList.add("hidden"); return; }
+
+      const type=String(file.type||"").toLowerCase();
+      const isImage=type.startsWith("image/");
+      const isVideo=type.startsWith("video/");
+      const max=isImage?15*1024*1024:isVideo?100*1024*1024:0;
+
+      if(!max){
+        mediaPreview.innerHTML='<span>⚠️ Format non pris en charge.</span>';
+        mediaPreview.classList.remove("hidden");
+        return;
+      }
+      if(file.size>max){
+        mediaPreview.innerHTML=`<span>⚠️ Fichier trop volumineux: ${(file.size/1024/1024).toFixed(1)} Mo. Maximum ${isImage?"15":"100"} Mo.</span>`;
+        mediaPreview.classList.remove("hidden");
+        return;
+      }
+
+      const url=URL.createObjectURL(file);
+      mediaPreview.classList.remove("hidden");
+      mediaPreview.innerHTML=isVideo
+        ? `<video src="${url}" controls muted playsinline></video><small>${esc(file.name)}</small>`
+        : `<img src="${url}" alt="Aperçu"><small>${esc(file.name)}</small>`;
+    });
+  }
+
+  form.addEventListener("submit",async e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    const text=$("composerText")?.value.trim()||"";
+    const file=$("composerFile")?.files?.[0]||null;
+    const visibility=$("composerVisibility")?.value||"Public";
+    const submit=$("composerSubmit");
+    if(!text&&!file){ toast("Ajoutez un texte ou un fichier."); return; }
+    if(file){
+      const fileType=String(file.type||"").toLowerCase();
+      const isImage=fileType.startsWith("image/");
+      const isVideo=fileType.startsWith("video/");
+      if(!isImage && !isVideo){ toast("Format non pris en charge. Choisissez une image ou une vidéo."); return; }
+      if(kind==="photo" && !isImage){ toast("Le mode Photo nécessite une image."); return; }
+      if((kind==="video"||kind==="reel") && !isVideo){ toast("Le mode Reel nécessite une vidéo."); return; }
+      const max=isImage?15*1024*1024:100*1024*1024;
+      if(file.size>max){ toast(`Fichier trop volumineux. Maximum ${isImage?"15 Mo":"100 Mo"}.`); return; }
+    }
+    if(page){ toast("Les publications de Page seront activées dans l'étape Pages."); return; }
+    if(submit){submit.disabled=true;submit.textContent="Publication…";}
+    toast("Publication en cours…");
+    try{
+      const publishKind=(kind==="video" || (kind==="post" && file && String(file.type||"").toLowerCase().startsWith("video/")))?"reel":kind;
+      const created=await createSupabasePost({text,file,visibility,kind:publishKind});
+      const local={
+        id:created.id, ownerId:created.user_id, ownerType:"user", title:"Publication",
+        text:created.content, media:created.media_url, mediaType:created.media_type,
+        visibility:({public:"Public",friends:"Amis",private:"Moi uniquement"}[created.visibility]||visibility),
+        allowedUsers:[], tags:[], createdAt:created.created_at, editedAt:created.updated_at,
+        shares:0, reactions:{}, myReaction:{}
+      };
+      state.posts=state.posts.filter(p=>p.id!==local.id);
+      state.posts.unshift(local);
+      save();
+      closeModal();
+      route="home";
+      render();
+      toast("Publication publiée avec succès ✓");
+      // Refresh is best-effort; publication success must not depend on SELECT RLS.
+      loadSupabasePosts().then(()=>{save();render();}).catch(err=>console.warn("Refresh posts après publication:",err));
+    }catch(err){
+      console.error("Publication Supabase:",err);
+      toast("Impossible de publier : "+(err?.message||"erreur Supabase"));
+      if(submit){submit.disabled=false;submit.textContent="Publier";}
+    }
+  });
+}
+function renderActivity(){const mine=state.posts.filter(p=>p.ownerId===state.current);return `${routeBackBar("Menu","menu")}<div class="page-head"><div><h1>Historique d'activité</h1><p>Vos publications récentes.</p></div></div><div class="card">${mine.length?mine.map(p=>`<div class="list-item"><div class="list-main"><b>${esc((p.text||"Publication").slice(0,100))}</b><small>${timeAgo(p.createdAt)}</small></div><button class="btn ghost danger" data-action="deletePost" data-id="${p.id}">Supprimer</button></div>`).join(""):`<div class="empty">Aucune activité publiée.</div>`}</div>`;}
+function renderHelp(){
+  const topics=["Compte et connexion","Publications et Stories","Amis et abonnés","Messages et appels","Pages et groupes","Badge bleu","Confidentialité","Sécurité","Marketplace","Recherche"];
+  return `${routeBackBar("Menu","menu")}<section class="help-premium-v90"><div class="help-hero-v90"><div class="help-icon-v90">?</div><div><span class="eyebrow">TAFAß · ASSISTANCE</span><h1>Aide</h1><p>Trouvez rapidement une réponse ou ouvrez une rubrique.</p></div></div><div class="help-search-v90">⌕ <input placeholder="Rechercher dans l'aide"></div><div class="help-grid-v90">${topics.map((x,i)=>`<button class="help-card-v90" data-action="helpTopic" data-topic="${esc(x)}"><span>${["◎","▣","♧","◈","▤","✓","◌","🔒","◇","⌕"][i]}</span><div><b>${esc(x)}</b><small>Voir les informations</small></div><strong>›</strong></button>`).join("")}</div></section>`;
+}
+function renderTerms(){
+  return `${routeBackBar("Menu","menu")}<section class="legal-premium-v90"><div class="legal-hero-v90"><span>§</span><div><span class="eyebrow">TAFAß · INFORMATIONS</span><h1>Conditions</h1><p>Les règles essentielles pour utiliser Tafaß.</p></div></div><div class="legal-card-v90"><h2>Utilisation de Tafaß</h2><p>Tafaß est un prototype de réseau social. Chaque utilisateur est responsable des contenus qu'il publie et des interactions qu'il crée.</p><h2>Respect de la communauté</h2><p>Pas de harcèlement, fraude, usurpation, contenu illégal ou atteinte à la vie privée.</p><h2>Contenus et modération</h2><p>Les signalements et décisions de modération sont simulés localement dans cette version.</p><h2>Fonctionnalités en prototype</h2><p>Les paiements, appels, notifications push, stockage cloud et authentification sécurisée nécessitent un backend.</p></div></section>`;
+}
+function renderAbout(){
+  return `${routeBackBar("Menu","menu")}<section class="about-premium-v90"><div class="about-hero-v90"><div class="about-logo-v90">T</div><div><span class="eyebrow">TAFAß · OFFICIEL</span><h1>À propos de Tafaß</h1><p>Un réseau social moderne pensé pour connecter les personnes, les communautés et les Pages.</p></div></div>
+  <div class="about-grid-v90"><article><span>◎</span><b>Tafaß Ofisialy</b><small>Compte officiel</small></article><article><span>✉</span><b>tafabofisialy@gmail.com</b><small>E-mail officiel</small></article><article><span>⌖</span><b>Antananarivo</b><small>Madagascar</small></article><article><span>▤</span><b>Pages & communautés</b><small>Créer, publier, suivre</small></article></div>
+  <div class="about-description-v90"><h2>Notre mission</h2><p>Tafaß permet de communiquer, publier des photos et vidéos, partager des Stories et Reels, discuter en privé, créer des groupes et développer des Pages professionnelles.</p><div class="about-features-v90"><span>Actualités</span><span>Messages</span><span>Amis</span><span>Pages</span><span>Vidéos</span><span>Marketplace</span><span>Groupes</span><span>Notifications</span></div></div></section>`;
+}
+function renderAdmin(){
+  if(state.current!==ADMIN_ID)return`${routeBackBar("Menu","menu")}<div class="card empty"><b>Accès refusé.</b><p>Le panneau administrateur est réservé au compte officiel.</p></div>`;
+  const pending=state.badgeRequests.filter(r=>r.status==="pending");
+  return `${routeBackBar("Menu","menu")}<div class="page-head"><div><h1>Administration Tafaß</h1><p>Gestion globale et modération.</p></div><span class="verified-badge">ADMIN OFFICIEL</span></div>
+  <div class="admin-stat"><div class="card"><b>${state.users.length}</b><small>Utilisateurs</small></div><div class="card"><b>${state.pages.length}</b><small>Pages</small></div><div class="card"><b>${state.posts.length}</b><small>Publications</small></div><div class="card"><b>${state.messages.length}</b><small>Messages</small></div></div>
+  <div class="grid-2" style="margin-top:14px"><div class="card"><h3>Demandes de badge</h3>${pending.length?pending.map(r=>`<div class="list-item"><div class="list-main"><b>${esc(displayName(findUser(r.userId)))}</b><small>${esc(r.category||"")}</small></div><button class="btn primary" data-action="approveBadge" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectBadge" data-id="${r.id}">Refuser</button></div>`).join(""):`<div class="empty">Aucune demande.</div>`}</div>
+  <div class="card"><h3>Modération</h3><p>Signalements : <b>${state.reports.length}</b></p><p>Notifications : <b>${state.notifications.length}</b></p><p>Groupes : <b>${state.groups.length}</b></p><button class="btn secondary" data-action="adminUsers">Gérer les utilisateurs</button></div></div>
+  <div class="card" style="margin-top:14px"><h3>Utilisateurs</h3>${state.users.map(u=>`<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${u.id===ADMIN_ID?"ADMIN":"UTILISATEUR"}</small></div>${u.id!==ADMIN_ID?`<button class="btn ghost danger" data-action="adminDeleteUser" data-id="${u.id}">Supprimer</button>`:""}</div>`).join("")}</div>`;
+}
+function renderSuggestions(n){const users=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)).slice(0,n);return users.length?users.map(u=>`<div class="list-item">${avatar(u,"avatar sm")}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)}</small></div><button class="link-btn" data-action="addFriend" data-id="${u.id}">Ajouter</button></div>`).join(""):`<div class="empty">Pas encore de suggestions.</div>`;}
+
+function bindPageEvents(){
+  document.querySelectorAll("[data-route]").forEach(el=>el.onclick=(e)=>{e.preventDefault();routeTo(el.dataset.route);});
+  document.querySelectorAll("[data-action]").forEach(el=>el.onclick=(e)=>handleAction(e,el));
+  document.querySelectorAll("[data-comment-form]").forEach(form=>form.onsubmit=async e=>{
+    e.preventDefault();const postId=form.dataset.commentForm,text=form.querySelector("input").value.trim();if(!text)return;
+    if(!supabaseReady()||!state.current){toast("Connexion requise");return;}
+    try{
+      const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,content:text});
+      if(error)throw error;
+      await loadSupabasePosts();save();render();toast("Commentaire publié ✓");
+    }catch(err){console.error(err);toast("Commentaire impossible : "+(err.message||"erreur Supabase"));}
+  });
+  document.querySelectorAll("[data-chat-form]").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const id=form.dataset.chatForm,text=form.querySelector('[name="text"]').value.trim(),input=form.querySelector('input[type=file]'),files=[...(input?.files||[])];if(!text&&!files.length)return;const payload=[];for(const f of files){const data=await fileToData(f);payload.push({name:f.name,type:f.type,size:f.size,data});}sendMessage(id,text,payload);form.reset();render();});
+  const theme=$("themeSelect");if(theme)theme.onchange=()=>{state.settings.dark=theme.value==="dark";save();applyTheme();};
+  const lang=$("languageSelect");if(lang)lang.onchange=()=>{state.settings.language=lang.value;save();toast("Langue enregistrée");};
+  const ps=$("pageSearchInput");if(ps){ps.oninput=()=>{window.globalSearchQuery=ps.value;const top=$("globalSearch");if(top)top.value=ps.value;clearTimeout(window.pageSearchTimer);window.pageSearchTimer=setTimeout(render,160);};ps.onkeydown=e=>{if(e.key==="Enter"){if(openSearchDeepLink(ps.value))return;const q=ps.value.trim();if(q){state.searches=[q,...state.searches.filter(x=>x!==q)].slice(0,15);save();}render();}};}
+  const ms=$("mediaSearchInput");if(ms)ms.oninput=()=>{window.mediaSearch=ms.value;clearTimeout(window.mediaSearchTimer);window.mediaSearchTimer=setTimeout(render,180);};
+  const fs=$("friendsSearchInput");if(fs)fs.oninput=()=>{friendSearch=fs.value;clearTimeout(window.friendSearchTimer);window.friendSearchTimer=setTimeout(render,150);};
+  const cs=$("conversationSearch");if(cs)cs.oninput=()=>{const q=cs.value.toLowerCase().trim();document.querySelectorAll(".conversation-row").forEach(x=>x.style.display=x.textContent.toLowerCase().includes(q)?"flex":"none");const box=$("messagePeopleResults");if(box){if(!q){box.innerHTML="";return;}const people=state.users.filter(u=>u.id!==state.current&&(displayName(u)+" "+(u.username||"")).toLowerCase().includes(q)).slice(0,6);box.innerHTML=people.map(u=>`<button class="message-person-result" data-action="startPersonConversation" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")}</small></span>${isOnline(u)?`<i class="online-dot"></i>`:""}</button>`).join("")||`<div class="message-search-empty">Aucune personne</div>`;}};
+  const mk=$("marketSearch");if(mk)mk.oninput=()=>{window.marketSearch=mk.value;clearTimeout(window.marketSearchTimer);window.marketSearchTimer=setTimeout(render,180);};
+}
+async function handleAction(e,el){
+  const a=el.dataset.action,id=el.dataset.id;
+  if(a==="closeModal")return closeModal();
+  if(a==="copyLink"){ closeModal(); return copyAppLink(id); }
+  if(a==="nativeShareLink"){ const url=appLink(id); if(navigator.share){navigator.share({title:"Tafaß",url}).catch(()=>{});} else copyAppLink(id,"Lien copié"); return; }
+  if(a==="shareLink")return shareLink(id);
+  if(a==="openComposer")return openComposer(el.dataset.kind||"post");
+  if(a==="refreshFeed"){
+    if(!supabaseReady()) return toast("Supabase non disponible");
+    try{
+      await loadSupabasePosts();
+      try{ await loadSupabaseFriends(); }catch(friendErr){ console.warn("Actualisation amis ignorée:",friendErr); }
+      save(); render(); toast("Actualités actualisées ✓");
+    }catch(err){
+      console.error("refreshFeed:",err);
+      toast("Actualisation impossible : "+(err.message||"erreur Supabase"));
+    }
+    return;
+  }
+  if(a==="createMarketplace")return createMarketplace();
+  if(a==="createStory")return openStory();
+  if(a==="viewStory")return viewStory(id);
+  if(a==="downloadStory"){const st=state.stories.find(x=>x.id===id);if(st)return downloadData(st.media,`Tafaß-story-${id}`);return;}
+  if(a==="storyReact"){const st=state.stories.find(x=>x.id===id);if(st){st.reactions=st.reactions||{};st.reactions[state.current]=true;if(st.ownerId!==state.current)notify(st.ownerId,"reaction",`${displayName(me())} a réagi à votre Story.`);save();toast("Réaction envoyée");}return;}
+  if(a==="downloadMedia"){const p=state.posts.find(x=>x.id===id);if(p)return downloadData(p.media,`Tafaß-${p.id}`);return;}
+  if(a==="viewMedia"){const p=state.posts.find(x=>x.id===id);if(p)return openMediaViewer(p);return;}
+  if(a==="downloadMarketMedia"){const x=(state.marketplace||[]).find(x=>x.id===id);if(x)return downloadData(x.image,`Tafaß-${x.title||"annonce"}`);return;}
+  if(a==="viewMarketMedia"){const x=(state.marketplace||[]).find(x=>x.id===id);if(x?.image)return modal(x.title,`<div class="media-viewer"><img src="${esc(x.image)}"><button class="btn primary wide" data-action="downloadMarketMedia" data-id="${x.id}">⇩ Enregistrer</button></div>`);return;}
+  if(a==="messageSearch")return document.querySelector("#conversationSearch")?.focus();
+  if(a==="clearPageSearch"){window.globalSearchQuery="";const top=$("globalSearch");if(top)top.value="";return render();}
+  if(a==="clearMediaSearch"){window.mediaSearch="";return render();}
+  if(a==="react")return reactPost(id,"J'aime");
+  if(a==="reactionMenu")return reactionMenu(id);
+  if(a==="chooseReaction"){openReactionPostId=null;return reactPost(id,el.dataset.reaction);}
+  if(a==="goBack"){return goBack(el.dataset.backTarget||"menu");}
+  if(a==="comment"){document.querySelector(`[data-comment-form="${id}"] input`)?.focus();return;}
+  if(a==="share")return sharePost(id);
+  if(a==="save"){state.saved=state.saved.includes(id)?state.saved.filter(x=>x!==id):[...state.saved,id];save();render();return;}
+  if(a==="postMore")return postMore(id);
+  if(a==="reportPost"){closeModal();state.reports.push({id:uid("report"),type:"post",targetId:id,userId:state.current,createdAt:new Date().toISOString()});save();return toast("Publication signalée");}
+  if(a==="hidePost"){closeModal();state.posts=state.posts.filter(p=>p.id!==id);save();render();return toast("Publication masquée");}
+  if(a==="likeComment")return toggleCommentLike(id);
+  if(a==="replyComment")return replyComment(id);
+  if(a==="editComment")return editComment(id);
+  if(a==="deleteComment")return deleteComment(id);
+  if(a==="addFriend")return sendFriend(id);
+  if(a==="acceptFriend")return acceptFriend(id);
+  if(a==="declineFriend")return declineFriend(id);
+  if(a==="removeFriend")return removeFriend(id);
+  if(a==="follow")return toggleFollow(id);
+  if(a==="followPage")return togglePageFollow(id);
+  if(a==="messageUser"||a==="messagePage")return startConversation(id);
+  if(a==="attachFile"){const form=el.closest("form");form?.querySelector("input[type=file]")?.click();return;}
+  if(a==="downloadMessageFile"){const all=state.messages.flatMap(m=>m.files||[m.file]).filter(Boolean);const f=all.find(x=>x.id===id);if(f?.data){const a=document.createElement("a");a.href=f.data;a.download=f.name||"Tafaß-fichier";a.click();}else toast("Fichier introuvable");return;}
+  if(a==="viewProfile")return routeToProfile(id);
+  if(a==="settingChoice"){
+    const key=el.dataset.settingKey, label=el.dataset.settingLabel, opts=JSON.parse(el.dataset.settingOptions||"[]");
+    modal(label,`<div class="setting-choice-modal-v91">${opts.map(v=>`<button class="setting-choice-v91 ${state.settings?.[key]===v?"active":""}" data-action="applySettingChoice" data-key="${esc(key)}" data-value="${esc(v)}"><span>${state.settings?.[key]===v?"✓":""}</span><b>${esc(v)}</b><i>›</i></button>`).join("")}</div>`); return;
+  }
+  if(a==="applySettingChoice"){ state.settings=state.settings||{}; state.settings[el.dataset.key]=el.dataset.value; if(el.dataset.key==="preferences-0"){state.settings.dark=el.dataset.value==="Sombre";} if(el.dataset.key==="preferences-1"||el.dataset.key==="langue-0"){state.settings.language=el.dataset.value;} save(); closeModal(); applyTheme(); render(); toast("Réglage appliqué"); return; }
+  if(a==="changePassword")return changePassword();
+  if(a==="editPersonalInfo")return editProfile();
+  if(a==="openNotificationSettings")return routeTo("notifications");
+  if(a==="openPrivacy")return routeTo("privacy");
+  if(a==="openSecurity")return routeTo("security");
+  if(a==="openLanguage")return routeTo("language");
+  if(a==="openDevices")return routeTo("devices");
+  if(a==="openPayments")return routeTo("payments");
+  if(a==="openFindFriends")return openFindFriends();
+  if(a==="friendTab"){friendTab=el.dataset.tab||"friends";return render();}
+
+  if(a==="searchFilter"){searchFilter=el.dataset.filter;return render();}
+  if(a==="clearSearches"){state.searches=[];save();render();return;}
+  if(a==="useSearch"){$("globalSearch").value=el.dataset.q;routeTo("search");return;}
+  if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
+  if(a==="markAllRead"){state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});save();render();return;}
+  if(a==="clearNotifications"){state.notifications=state.notifications.filter(n=>n.userId!==state.current);save();render();return;}
+  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n)n.read=true;save();render();return;}
+  if(a==="newConversation")return newConversation();
+  if(a==="startPersonConversation")return startConversation(id);
+  if(a==="selectConversation"){activeConversation=id;render();return;}
+  if(a==="attachFile"){document.querySelector(`input[type=file][id="chatFile_${activeConversation}"]`)?.click();return;}
+  if(a==="voiceCall")return voiceCall(id);
+  if(a==="voiceInvite")return toast("Message vocal simulé : connectez un backend/WebRTC pour la version réelle.");
+  if(a==="createPage")return createPage();
+  if(a==="viewPage"){editingPageId=id;return routeTo("pageView");}
+  if(a==="pageMore"){const p=findPage(id);if(!p)return;const own=p.ownerId===state.current;return modal("Options de la Page",`<div class="premium-options">${own?`<button class="menu-card-premium" data-action="editPage" data-id="${id}"><span>✎</span><strong>Modifier la Page</strong></button><button class="menu-card-premium" data-action="switchPage" data-id="${id}"><span>▤</span><strong>Passer en mode Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`:`<button class="menu-card-premium" data-action="followPage" data-id="${id}"><span>＋</span><strong>${state.follows.some(f=>f.from===state.current&&f.to===id)?"Ne plus suivre":"Suivre"}</strong></button><button class="menu-card-premium" data-action="messagePage" data-id="${id}"><span>◈</span><strong>Message</strong></button><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler la Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`}</div>`);}
+  if(a==="pageModeHome"){pageTab="posts";return render();}
+  if(a==="pageModeMessages"){return routeTo("messages");}
+  if(a==="pageModeVideos"){pageTab="reels";return render();}
+  if(a==="pageModeNotifications"){return routeTo("notifications");}
+  if(a==="pageModeSearch"){return routeTo("search");}
+  if(a==="pageModeMenu"){return routeTo("menu");}
+  if(a==="switchPage"){state.pageMode=id;editingPageId=id;pageTab="posts";save();toast("Vous êtes passé en mode Page");return routeTo("pageView");}
+  if(a==="leavePageMode"){state.pageMode=null;save();return routeTo("profile");}
+  if(a==="editPage")return editPage(id);
+  if(a==="createGroup")return createGroup();
+  if(a==="joinGroup")return joinGroup(id);
+  if(a==="editProfile")return editProfile();
+  if(a==="editCover")return editCover();
+  if(a==="deletePost"){
+    const p=state.posts.find(x=>x.id===id); if(!p)return;
+    if(p.ownerId!==state.current)return toast("Vous ne pouvez pas supprimer cette publication.");
+    if(supabaseReady()){const {error}=await SB.from("posts").delete().eq("id",id);if(error)return toast("Suppression impossible");}
+    state.posts=state.posts.filter(x=>x.id!==id);save();closeModal();render();return toast("Publication supprimée");
+  }
+  if(a==="editPost")return editPost(id);
+  if(a==="reportMarket"){state.reports.push({id:uid("report"),type:"marketplace",targetId:id,userId:state.current,createdAt:new Date().toISOString()});save();closeModal();return toast("Annonce signalée");}
+  if(a==="deleteMarket"){const x=(state.marketplace||[]).find(v=>v.id===id);if(x?.ownerId===state.current){state.marketplace=state.marketplace.filter(v=>v.id!==id);save();closeModal();render();toast("Annonce supprimée");}return;}
+  if(a==="createEvent")return createEvent();
+  if(a==="startBadge")return badgeWizard();
+  if(a==="openBadge")return routeTo("badge");
+  if(a==="approveBadge")return badgeDecision(id,true);
+  if(a==="rejectBadge")return badgeDecision(id,false);
+  if(a==="adminDeleteUser"){if(confirm("Supprimer ce compte local ?")){state.users=state.users.filter(u=>u.id!==id);save();render();}return;}
+  if(a==="adminUsers")return toast("Gestion utilisateurs déjà visible ci-dessous.");
+  if(a==="helpTopic"){ const t=el.dataset.topic; const help={"Compte et connexion":"Gérez la connexion, l'inscription, le changement de mot de passe et la déconnexion.","Publications et Stories":"Créez, modifiez, supprimez, enregistrez et partagez vos contenus. La visibilité peut être Public, Amis ou Moi uniquement.","Amis et abonnés":"Envoyez des invitations, acceptez ou refusez des demandes et gérez vos abonnements.","Messages et appels":"Recherchez une personne, envoyez du texte, des photos, vidéos et fichiers. Les appels sont simulés dans le prototype.","Pages et groupes":"Créez une Page ou un groupe, publiez au nom de votre Page et gérez les membres.","Badge bleu":"Demandez le badge bleu en 5 étapes pour 25 000 Ar/mois. Le paiement reste simulé localement.","Confidentialité":"Réglez la visibilité de votre profil, bio, photos, situation amoureuse, pseudo, publications et Stories.","Sécurité":"Modifiez votre mot de passe, surveillez les sessions et activez la vérification en deux étapes dans le prototype.","Marketplace":"Publiez des annonces, recherchez des produits et contactez un vendeur.","Recherche":"Recherchez des personnes, comptes, Pages, groupes, publications, photos, vidéos et Reels."}; return modal(t,`<div class="help-topic-card-v91"><div class="help-topic-icon-v91">?</div><p>${esc(help[t]||"Cette rubrique contient les informations d'utilisation de Tafaß.")}</p><button class="btn primary wide" data-action="closeModal">Compris</button></div>`); }
+  if(a==="applySettings"){state.settings=state.settings||{};document.querySelectorAll("[data-setting-key]").forEach(x=>{state.settings[x.dataset.settingKey]=x.value});save();toast("Paramètres appliqués");return;}
+  if(a==="switchAccount")return openAccountSwitcher();
+  if(a==="addAccount"){closeModal();return toast("Ajout de plusieurs comptes sera relié à Supabase dans une prochaine étape.");}
+
+  if(a==="selectAccount"){return toast("Le changement de compte local est désactivé avec Supabase Auth.");}
+  if(a==="logout"){
+    (async()=>{try{await signOutSupabase();state.pageMode=null;route="home";render();toast("Session déconnectée");}
+    catch(e){console.error(e);toast("Impossible de se déconnecter.");}})();
+    return;
+  }
+  if(a==="postMore")return postMore(id);
+  if(a==="reportPost"){closeModal();state.reports.push({id:uid("report"),type:"post",targetId:id,userId:state.current,createdAt:new Date().toISOString()});save();return toast("Publication signalée");}
+  if(a==="hidePost"){closeModal();state.posts=state.posts.filter(p=>p.id!==id);save();render();return toast("Publication masquée");}
+  if(a==="reactionMenu")return reactionMenu(id);
+  if(a==="react")return reactPost(id,"👍");
+  if(a==="comment")return document.querySelector(`[data-comment-form="${id}"] input`)?.focus();
+  if(a==="share")return sharePost(id);
+  if(a==="save"){const i=state.saved.indexOf(id);if(i>=0)state.saved.splice(i,1);else state.saved.push(id);save();render();return;}
+  if(a==="profileTab"){profileTab=el.dataset.tab||"posts";return render();}
+  if(a==="pageTab"){pageTab=el.dataset.tab||"posts";return render();}
+  if(a==="profile"){profileViewingId=state.current;return routeTo("profile");}
+  if(a==="profileStat"){const labels={friends:"amis",followers:"abonnés",following:"suivis"};toast(`${labels[el.dataset.stat]||"statistiques"} : affichage prêt`);return;}
+  if(a==="profileMore"){const u=findUser(id);if(!u)return; if(id===state.current)return profileOwnMenu(); return profileOtherMenu(id);}
+  if(a==="profileOwnMenu")return profileOwnMenu();
+  if(a==="profileOtherMenu")return profileOtherMenu(id);
+  if(a==="viewAs")return toast("Aperçu public du profil");
+  if(a==="profileStatus")return modal("Statut du profil",`<div class="premium-options"><button class="menu-card-premium" data-action="toggleOnline">${isOnline(me())?"🟢 En ligne":"⚪ Hors ligne"}</button></div>`);
+  if(a==="toggleOnline"){const u=me();u.online=!u.online;save();closeModal();render();return;}
+  if(a==="archive")return modal("Archives",`<div class="premium-options"><button class="menu-card-premium" data-action="archiveStories"><span>◉</span><strong>Stories archivées</strong></button><button class="menu-card-premium" data-action="archivePosts"><span>▣</span><strong>Publications supprimées</strong></button></div>`);
+  if(a==="archiveStories")return toast("Archive Stories prête");
+  if(a==="archivePosts")return toast("Archive des publications prête");
+  if(a==="activityHistory")return routeTo("activity");
+  if(a==="friendLinks")return modal("Liens d'amitié",`<p>Les liens d'amitié communs apparaîtront ici.</p>`);
+  if(a==="followPrefs")return modal("Suivre",`<div class="modal-option-list"><button data-action="follow" data-id="${id}">Par défaut</button><button data-action="follow" data-id="${id}">Favoris</button><button data-action="follow" data-id="${id}">Ne plus suivre</button></div>`);
+  if(a==="reportProfile")return closeModal(),toast("Profil signalé localement");
+  if(a==="blockProfile")return closeModal(),toast("Profil bloqué localement");
+  if(a==="viewProfile")return routeToProfile(id);
+  if(a==="settingChoice"){
+    const key=el.dataset.settingKey, label=el.dataset.settingLabel, opts=JSON.parse(el.dataset.settingOptions||"[]");
+    modal(label,`<div class="setting-choice-modal-v91">${opts.map(v=>`<button class="setting-choice-v91 ${state.settings?.[key]===v?"active":""}" data-action="applySettingChoice" data-key="${esc(key)}" data-value="${esc(v)}"><span>${state.settings?.[key]===v?"✓":""}</span><b>${esc(v)}</b><i>›</i></button>`).join("")}</div>`); return;
+  }
+  if(a==="applySettingChoice"){ state.settings=state.settings||{}; state.settings[el.dataset.key]=el.dataset.value; if(el.dataset.key==="preferences-0"){state.settings.dark=el.dataset.value==="Sombre";} if(el.dataset.key==="preferences-1"||el.dataset.key==="langue-0"){state.settings.language=el.dataset.value;} save(); closeModal(); applyTheme(); render(); toast("Réglage appliqué"); return; }
+  if(a==="changePassword")return changePassword();
+  if(a==="editPersonalInfo")return editProfile();
+  if(a==="openNotificationSettings")return routeTo("notifications");
+  if(a==="openPrivacy")return routeTo("privacy");
+  if(a==="openSecurity")return routeTo("security");
+  if(a==="openLanguage")return routeTo("language");
+  if(a==="openDevices")return routeTo("devices");
+  if(a==="openPayments")return routeTo("payments");
+  if(a==="viewPage"){editingPageId=id;return routeTo("pageView");}
+  if(a==="pageModeHome"){pageTab="posts";return render();}
+  if(a==="pageModeMessages"){return routeTo("messages");}
+  if(a==="pageModeVideos"){pageTab="reels";return render();}
+  if(a==="pageModeNotifications"){return routeTo("notifications");}
+  if(a==="pageModeSearch"){return routeTo("search");}
+  if(a==="pageModeMenu"){return routeTo("menu");}
+  if(a==="viewStory")return viewStory(id);
+  if(a==="createStory")return openStory();
+  if(a==="mediaFilter"){mediaFilter=el.dataset.filter||"all";return render();}
+  if(a==="marketMore")return marketMore(id);
+  if(a==="openMarketItem"){const item=(state.marketplace||[]).find(x=>x.id===id);if(item)return modal(item.title,`<div class="market-modal"><span class="type-pill">${esc(item.kind||"Produit")}</span><h3>${esc(item.price||"Prix à définir")}</h3><p>${esc(item.description||"")}</p><p class="muted">${esc(item.location||"Madagascar")}</p><button class="btn primary wide" data-action="messageSeller" data-id="${item.ownerId}">Contacter le vendeur</button></div>`);return;}
+  if(a==="messageSeller")return startConversation(id);
+  if(a==="marketFilter"){marketFilter=el.dataset.filter||"all";return render();}
+  if(a==="forgotBtn")return forgot();
+}
+
+function profileOwnMenu(){modal("Mon profil",`<div class="premium-options"><button class="menu-card-premium" data-action="viewAs"><span>◉</span><strong>Voir en tant que</strong></button><button class="menu-card-premium" data-action="editProfile"><span>✎</span><strong>Modifier</strong></button><button class="menu-card-premium" data-action="profileStatus"><span>●</span><strong>Statut du profil</strong></button><button class="menu-card-premium" data-action="archive"><span>▣</span><strong>Archive</strong></button><button class="menu-card-premium" data-action="activityHistory"><span>◷</span><strong>Historique d'activité</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${state.current}"><span>🔗</span><strong>Copier le lien du profil</strong></button></div>`);}
+function profileOtherMenu(id){modal("Options du profil",`<div class="premium-options"><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler le profil</strong></button><button class="menu-card-premium" data-action="blockProfile" data-id="${id}"><span>⊘</span><strong>Bloquer</strong></button>${isFriend(id)?`<button class="menu-card-premium" data-action="removeFriend" data-id="${id}"><span>−</span><strong>Retirer</strong></button>`:""}<button class="menu-card-premium" data-action="friendLinks" data-id="${id}"><span>♧</span><strong>Voir les liens d'amitié</strong></button><button class="menu-card-premium" data-action="followPrefs" data-id="${id}"><span>◉</span><strong>Suivre</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien du profil</strong></button></div>`);}
+function toggleCommentLike(id){const c=state.comments.find(x=>x.id===id);if(!c)return;c.likes=c.likes||{};c.likes[state.current]=!c.likes[state.current];save();render();}
+function replyComment(id){
+  const c=state.comments.find(x=>x.id===id); if(!c)return;
+  modal("Répondre",`<form id="replyForm"><textarea id="replyText" required placeholder="Votre réponse..."></textarea><button class="btn primary wide">Répondre</button></form>`);
+  $("replyForm").onsubmit=async e=>{
+    e.preventDefault(); const text=$("replyText").value.trim(); if(!text)return;
+    try{
+      const {error}=await SB.from("comments").insert({post_id:c.postId,parent_id:c.id,user_id:state.current,content:text});
+      if(error)throw error;
+      if(c.userId!==state.current)notify(c.userId,"reply",`${displayName(me())} a répondu à votre commentaire.`,c.postId);
+      await loadSupabasePosts();save();closeModal();render();toast("Réponse publiée ✓");
+    }catch(err){console.error(err);toast("Réponse impossible : "+(err.message||"erreur Supabase"));}
+  };
+}
+function editComment(id){
+  const c=state.comments.find(x=>x.id===id);
+  if(!c||c.userId!==state.current)return;
+  modal("Modifier le commentaire",`<form id="editCommentForm"><textarea id="editCommentText" required>${esc(c.text)}</textarea><button class="btn primary wide">Enregistrer</button></form>`);
+  $("editCommentForm").onsubmit=async e=>{
+    e.preventDefault();
+    const text=$("editCommentText").value.trim(); if(!text)return;
+    try{
+      const {error}=await SB.from("comments").update({content:text,edited_at:new Date().toISOString()}).eq("id",id).eq("user_id",state.current);
+      if(error)throw error;
+      await loadSupabasePosts();save();closeModal();render();toast("Commentaire modifié ✓");
+    }catch(err){console.error(err);toast("Modification impossible : "+(err.message||"erreur Supabase"));}
+  };
+}
+async function deleteComment(id){
+  const c=state.comments.find(x=>x.id===id);
+  if(!c||c.userId!==state.current)return;
+  try{
+    const {error}=await SB.from("comments").delete().eq("id",id).eq("user_id",state.current);
+    if(error)throw error;
+    await loadSupabasePosts();save();render();toast("Commentaire supprimé ✓");
+  }catch(err){console.error(err);toast("Suppression impossible : "+(err.message||"erreur Supabase"));}
+}
+
+async function routeToProfile(id){
+  if(!id) return;
+  profileViewingId=id;
+  route="profile";
+  render();
+  const existing=findUser(id);
+  if(!existing && supabaseReady()){
+    await loadSupabaseProfileById(id);
+    if(profileViewingId===id && route==="profile") render();
+  }else if(existing && supabaseReady() && id!==state.current){
+    // Refresh the profile so Recherche always opens the latest Supabase data.
+    await loadSupabaseProfileById(id);
+    if(profileViewingId===id && route==="profile") render();
+  }
+}
+async function reactPost(id,type){
+  const p=state.posts.find(x=>x.id===id);if(!p)return;
+  if(!supabaseReady()||!state.current){toast("Connexion requise");return;}
+  try{
+    const old=p.myReaction?.[state.current]||null;
+    const next=old===type?null:type;
+    const {data,error}=await SB.rpc("tafa_set_post_reaction",{p_post_id:id,p_reaction:next});
+    if(error)throw error;
+    await loadSupabasePosts();save();render();
+  }catch(err){
+    console.error("reactPost:",err);
+    toast("Réaction impossible : "+(err.message||"erreur Supabase"));
+  }
+}
+async function sharePost(id){
+  const p=state.posts.find(x=>x.id===id);
+  if(!p)return;
+  if(!supabaseReady()||!state.current){toast("Connexion requise");return;}
+  try{
+    const {error}=await SB.rpc("tafa_increment_post_share",{p_post_id:id});
+    if(error)throw error;
+    await loadSupabasePosts();
+    save(); render();
+    toast("Publication partagée ✓");
+  }catch(err){
+    console.error("sharePost:",err);
+    toast("Partage impossible : "+(err.message||"erreur Supabase"));
+  }
+}
+
+function editPost(id){
+ const p=state.posts.find(x=>x.id===id); if(!p||p.ownerId!==state.current)return;
+ modal("Modifier la publication",`<form id="editPostForm" class="premium-form"><label>Texte<textarea id="editPostText">${esc(p.text||"")}</textarea></label><label>Visibilité<select id="editPostVisibility"><option ${p.visibility==="Public"?"selected":""}>Public</option><option ${p.visibility==="Amis"?"selected":""}>Amis</option><option ${p.visibility==="Sélection personnalisée"?"selected":""}>Sélection personnalisée</option><option ${p.visibility==="Moi uniquement"?"selected":""}>Moi uniquement</option></select></label><button class="btn primary wide">Enregistrer</button></form>`);
+ $("editPostForm").onsubmit=async e=>{e.preventDefault();p.text=$("editPostText").value.trim();p.visibility=$("editPostVisibility").value;p.editedAt=new Date().toISOString();
+   if(supabaseReady()){const {error}=await SB.from("posts").update({content:p.text,visibility:postVisibilityToDb(p.visibility),updated_at:p.editedAt}).eq("id",p.id).eq("user_id",state.current);if(error)return toast("Modification impossible");}
+   save();closeModal();render();toast("Publication modifiée");};
+}
+function postMore(id){
+  const p=state.posts.find(x=>x.id===id); if(!p)return;
+  const own=p.ownerId===state.current;
+  modal("Options de la publication",`<div class="premium-action-sheet-v85">
+    <button class="action-sheet-item-v85" data-action="save" data-id="${id}"><span>🔖</span><b>${state.saved.includes(id)?"Retirer des enregistrements":"Enregistrer"}</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="share" data-id="${id}"><span>↗</span><b>Partager</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="shareLink" data-id="${id}"><span>🔗</span><b>Copier le lien</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="reportPost" data-id="${id}"><span>⚑</span><b>Signaler</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="hidePost" data-id="${id}"><span>⊘</span><b>Masquer</b><i>›</i></button>
+    ${own?`<button class="action-sheet-item-v85" data-action="editPost" data-id="${id}"><span>✎</span><b>Modifier</b><i>›</i></button><button class="action-sheet-item-v85 danger" data-action="deletePost" data-id="${id}"><span>⌫</span><b>Supprimer</b><i>›</i></button>`:""}
+  </div>`);
+}
+function marketMore(id){
+  const x=(state.marketplace||[]).find(v=>v.id===id);if(!x)return;
+  const own=x.ownerId===state.current;
+  modal("Options de l'annonce",`<div class="premium-action-sheet-v85">
+    <button class="action-sheet-item-v85" data-action="viewMarketMedia" data-id="${id}"><span>◉</span><b>Voir la photo</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="downloadMarketMedia" data-id="${id}"><span>⇩</span><b>Enregistrer</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="messageSeller" data-id="${x.ownerId}"><span>◈</span><b>Contacter</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="reportMarket" data-id="${id}"><span>⚑</span><b>Signaler</b><i>›</i></button>
+    ${own?`<button class="action-sheet-item-v85 danger" data-action="deleteMarket" data-id="${id}"><span>⌫</span><b>Supprimer</b><i>›</i></button>`:""}
+  </div>`);
+}
+function reactionMenu(id){
+  openReactionPostId=openReactionPostId===id?null:id;
+  render();
+}
+function fileToData(file){if(!file)return Promise.resolve("");return new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>res("");r.readAsDataURL(file);});}
+function openStory(){modal("Créer une Story",`<form id="storyForm" class="premium-form"><label>Texte<textarea id="storyText" placeholder="Votre Story..."></textarea></label><label>Photo / vidéo<input id="storyFile" type="file" accept="image/*,video/*"></label><button class="btn primary wide">Publier</button></form>`);$("storyForm").onsubmit=e=>{e.preventDefault();const f=$("storyFile").files[0];fileToData(f).then(media=>{state.stories.unshift({id:uid("story"),ownerId:state.current,ownerType:"user",text:$("storyText").value.trim(),media,views:[],reactions:{},replies:[],createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+24*3600e3).toISOString()});save();closeModal();render();});};}
+function viewStory(id){const s=state.stories.find(x=>x.id===id),owner=s?.ownerType==="page"?findPage(s.ownerId):findUser(s.ownerId);if(!s||!owner)return;if(s.ownerId!==state.current){s.views=s.views||[];if(!s.views.includes(state.current))s.views.push(state.current);}save();const viewers=(s.views||[]).map(x=>findUser(x)).filter(Boolean);modal(displayName(owner),`<div class="story-viewer">${s.media?`<div class="media-click">${s.media.match(/^data:video/)?`<video src="${esc(s.media)}" controls autoplay></video>`:`<img src="${esc(s.media)}">`}<button class="btn secondary wide" data-action="downloadStory" data-id="${id}">⇩ Enregistrer</button></div>`:""}<p>${esc(s.text||"")}</p><div class="story-actions"><button data-action="storyReact" data-id="${id}">❤️ Réagir</button></div>${s.ownerId===state.current?`<div class="story-viewers"><b>${viewers.length} vues</b>${viewers.map(v=>`<span>${avatar(v,"avatar xs")} ${esc(displayName(v))}</span>`).join("")||"<small>Aucune vue</small>"}</div>`:""}<form id="storyReplyForm"><input id="storyReplyText" placeholder="Répondre à cette Story..."><button class="btn primary">Envoyer</button></form></div>`);$("storyReplyForm").onsubmit=e=>{e.preventDefault();const text=$("storyReplyText").value.trim();if(!text)return;s.replies=s.replies||[];s.replies.push({userId:state.current,text,createdAt:new Date().toISOString()});notify(s.ownerId,"message",`${displayName(me())} a répondu à votre Story.`);save();closeModal();toast("Réponse envoyée");};}
+function toggleFollow(id){if(id===state.current)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0)state.follows.splice(i,1);else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});notify(id,"follow",`${displayName(me())} vous suit maintenant.`);}save();render();}
+function togglePageFollow(id){const p=findPage(id);if(!p)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0){state.follows.splice(i,1);p.followers=Math.max(0,(p.followers||0)-1);}else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});p.followers=(p.followers||0)+1;notify(p.ownerId,"follow",`${displayName(me())} suit votre Page.`);}save();render();}
+function startConversation(id){
+  let c=state.conversations.find(c=>c.type==="private"&&c.members.includes(state.current)&&c.members.includes(id));
+  if(!c){c={id:uid("conv"),type:"private",members:[state.current,id],name:""};state.conversations.push(c);save();}
+  activeConversation=c.id;routeTo("messages");
+}
+function newConversation(){
+  const people=state.users.filter(u=>u.id!==state.current).map(u=>`<option value="${u.id}">${esc(displayName(u))} (@${esc(u.username)})</option>`).join("");
+  modal("Nouveau message",`<form id="newConvForm"><label>Destinataire<select id="newConvUser" required>${people}</select></label><label>Premier message<textarea id="newConvText"></textarea></label><div class="actions"><button type="button" class="btn secondary" data-action="createGroup">＋ Groupe</button><button class="btn primary">Créer la conversation</button></div></form>`);
+  $("newConvForm").onsubmit=e=>{e.preventDefault();startConversation($("newConvUser").value);setTimeout(()=>{const c=state.conversations.find(c=>c.id===activeConversation);if($("newConvText").value.trim())sendMessage(c.id,$("newConvText").value.trim());closeModal();render();},0);};
+}
+function sendMessage(convId,text,fileOrFiles){
+  const c=state.conversations.find(x=>x.id===convId);
+  const to=c?.members?.find(x=>x!==state.current)||null;
+  let files=[];
+  if(Array.isArray(fileOrFiles)) files=fileOrFiles.filter(Boolean).map(f=>Object.assign({id:uid("mf")},f));
+  else if(fileOrFiles) files=[Object.assign({id:uid("mf")},fileOrFiles)];
+  state.messages.push({id:uid("m"),conversationId:convId,from:state.current,to,text,files,file:files[0]||null,read:false,createdAt:new Date().toISOString()});
+  if(to)notify(to,"message",`${displayName(me())} vous a envoyé un message.`);
+  save();
+}
+function voiceCall(id){modal("Appel vocal",`<div class="empty"><div class="empty-icon">☎</div><b>Appel simulé</b><p>L'interface est prête. Pour un appel réel, branchez WebRTC + signalisation backend.</p><button class="btn primary" data-action="closeModal">Terminer</button></div>`);}
+function createMarketplace(){
+  modal("Nouvelle annonce",`<form id="marketForm" class="premium-form">
+    <label>Type<select id="mKind"><option>Produit</option><option>Service</option><option>Boutique</option></select></label>
+    <label>Titre<input id="mTitle" required placeholder="Ex. Smartphone, vêtement, service..."></label>
+    <label>Prix<input id="mPrice" placeholder="Ex. 250 000 Ar"></label>
+    <label>Description<textarea id="mDesc" required></textarea></label>
+    <label>Localisation<input id="mLoc" placeholder="Antananarivo"></label>
+    <label>Photo<input id="mFile" type="file" accept="image/*"></label>
+    <button class="btn primary wide">Publier l'annonce</button>
+  </form>`);
+  $("marketForm").onsubmit=e=>{e.preventDefault();const f=$("mFile").files[0];fileToData(f).then(image=>{state.marketplace=state.marketplace||[];state.marketplace.unshift({id:uid("market"),ownerId:state.current,kind:$("mKind").value,title:$("mTitle").value.trim(),price:$("mPrice").value.trim(),description:$("mDesc").value.trim(),location:$("mLoc").value.trim(),image,createdAt:new Date().toISOString()});save();closeModal();render();toast("Annonce publiée");});};
+}
+function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de la Page<input id="pName" required></label><label>Catégorie<select id="pCat">${PAGE_CATS.map(x=>`<option>${x}</option>`).join("")}</select></label><label>Username<input id="pUser" required placeholder="ma_page"></label><label>Description<textarea id="pDesc"></textarea></label><label>E-mail<input id="pEmail" type="email"></label><label>Téléphone<input id="pPhone"></label><label>Site web<input id="pWeb"></label><label>Adresse<input id="pAddress"></label><label>Horaires<input id="pHours"></label><label>Services / produits<textarea id="pServices"></textarea></label><button class="btn primary wide">Créer la Page</button></form>`);
+  $("pageForm").onsubmit=e=>{e.preventDefault();const p={id:uid("page"),ownerId:state.current,name:$("pName").value.trim(),category:$("pCat").value,username:$("pUser").value.trim(),description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:"",cover:"",createdAt:new Date().toISOString()};state.pages.push(p);save();closeModal();render();toast("Page créée");};
+}
+function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=e=>{e.preventDefault();p.name=$("epName").value;p.description=$("epDesc").value;p.category=$("epCat").value;save();closeModal();render();};}
+function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=e=>{e.preventDefault();state.groups.push({id:uid("g"),name:$("gName").value,privacy:$("gPrivacy").value,description:$("gDesc").value,members:[state.current],ownerId:state.current});save();closeModal();render();};}
+function joinGroup(id){const g=state.groups.find(x=>x.id===id);if(g&&!g.members.includes(state.current)){g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe");}}
+function changePassword(){
+  modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Le nouveau mot de passe est enregistré localement dans ce prototype. Pour une version réelle, utilisez un service d'authentification sécurisé.</div><label>Mot de passe actuel<input id="oldPass" type="password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
+  $("passwordChangeForm").onsubmit=e=>{e.preventDefault();const u=me(),a=$("oldPass").value,b=$("newPass").value,c=$("newPass2").value;if(a!==u.pass)return toast("Mot de passe actuel incorrect.");if(b.length<6)return toast("Le nouveau mot de passe doit contenir au moins 6 caractères.");if(b!==c)return toast("Les mots de passe ne correspondent pas.");u.pass=b;save();closeModal();toast("Mot de passe modifié");};
+}
+
+async function uploadProfileImage(file, kind){
+  if(!file) return null;
+  if(!supabaseReady()) throw new Error("Supabase non configuré");
+  if(!file.type.startsWith("image/")) throw new Error("Fichier image requis.");
+  if(file.size > 8 * 1024 * 1024) throw new Error("Image trop volumineuse (8 Mo maximum).");
+  const ext=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
+  const path=`${state.current}/${kind}-${Date.now()}.${ext}`;
+  const {error:upErr}=await SB.storage.from("profiles").upload(path,file,{upsert:true,contentType:file.type});
+  if(upErr) throw upErr;
+  const {data}=SB.storage.from("profiles").getPublicUrl(path);
+  return data?.publicUrl||"";
+}
+async function saveCurrentProfileToSupabase(u){
+  if(!supabaseReady()||!u?.id) throw new Error("Session Supabase introuvable.");
+  const payload={
+    id:u.id,
+    first_name:u.firstName||"",
+    last_name:u.lastName||"",
+    birth:u.birth||null,
+    gender:u.gender||"",
+    username:(u.username||"").trim()||null,
+    country:u.country||"Madagascar",
+    phone_code:u.code||"",
+    phone:u.phone||"",
+    email:u.email||"",
+    bio:u.bio||"",
+    location:u.location||"",
+    avatar_url:u.avatar||null,
+    cover_url:u.cover||null,
+    pseudo:u.pseudo||"",
+    relationship_status:u.relationshipStatus||"",
+    privacy:u.privacy||{}
+  };
+  const {data,error}=await SB.from("profiles").upsert(payload,{onConflict:"id"}).select("*").single();
+  if(error) throw error;
+  const fresh=profileFromRow(data);
+  state.users=[fresh];
+  state.current=fresh.id;
+  save();
+  return fresh;
+}
+function editProfile(){
+  const u=me(); u.privacy=u.privacy||{};
+  const opts=(key,selected)=>`<select id="${key}Privacy"><option ${selected==="Public"?"selected":""}>Public</option><option ${selected==="Amis"?"selected":""}>Amis</option><option ${selected==="Moi uniquement"?"selected":""}>Moi uniquement</option></select>`;
+  modal("Modifier le profil",`<form id="profileForm" class="premium-form profile-edit-premium">
+    <div class="profile-edit-section"><h3>Identité</h3><div class="edit-grid">
+      <label>Prénom<input id="eFirst" value="${esc(u.firstName||"")}"></label>
+      <label>Nom<input id="eLast" value="${esc(u.lastName||"")}"></label>
+      <label>Pseudo<input id="ePseudo" value="${esc(u.pseudo||"")}" placeholder="Votre pseudo"></label>
+      <label>Nom d'utilisateur<input id="eUser" value="${esc(u.username||"")}" required></label>
+      <label>Date de naissance<input id="eBirth" type="date" value="${esc(u.birth||"")}"></label>
+      <label>Genre<select id="eGender"><option value="">Non renseigné</option><option ${u.gender==="Homme"?"selected":""}>Homme</option><option ${u.gender==="Femme"?"selected":""}>Femme</option><option ${u.gender==="Autre"?"selected":""}>Autre</option></select></label>
+      <label>Pays<input id="eCountry" value="${esc(u.country||"Madagascar")}"></label>
+      <label>Code téléphone<input id="eCode" value="${esc(u.code||"")}" placeholder="+261"></label>
+      <label>Téléphone<input id="ePhone" value="${esc(u.phone||"")}"></label>
+      <label>E-mail<input id="eEmail" type="email" value="${esc(u.email||"")}"></label>
+    </div></div>
+    <div class="profile-edit-section"><h3>À propos</h3>
+      <label>Bio<textarea id="eBio">${esc(u.bio||"")}</textarea>${opts("bio",u.privacy.bio||"Public")}</label>
+      <label>Localisation<input id="eLoc" value="${esc(u.location||"")}">${opts("location",u.privacy.location||"Public")}</label>
+      <label>Situation amoureuse<select id="eRelationship">
+        <option value="" ${!u.relationshipStatus?"selected":""}>Non renseignée</option>
+        <option ${u.relationshipStatus==="Célibataire"?"selected":""}>Célibataire</option>
+        <option ${u.relationshipStatus==="En couple"?"selected":""}>En couple</option>
+        <option ${u.relationshipStatus==="Marié(e)"?"selected":""}>Marié(e)</option>
+        <option ${u.relationshipStatus==="C'est compliqué"?"selected":""}>C'est compliqué</option>
+      </select>${opts("relationshipStatus",u.privacy.relationshipStatus||"Public")}</label>
+    </div>
+    <div class="profile-edit-section"><h3>Photos</h3>
+      <label>Photo de profil<input id="eAvatar" type="file" accept="image/*"></label>
+      <label>Photo de couverture<input id="eCover" type="file" accept="image/*"></label>
+      <p class="field-help">Les images sont envoyées dans Supabase Storage. Elles ne sont plus stockées en local.</p>
+    </div>
+    <div class="profile-edit-section"><h3>Confidentialité</h3><div class="privacy-grid">
+      <div>Nom d'utilisateur${opts("username",u.privacy.username||"Public")}</div>
+      <div>Situation amoureuse${opts("relationshipStatus2",u.privacy.relationshipStatus||"Public")}</div>
+      <div>Localisation${opts("location2",u.privacy.location||"Public")}</div>
+      <div>Bio${opts("bio2",u.privacy.bio||"Public")}</div>
+    </div></div>
+    <button class="btn primary wide" id="saveProfileBtn">Enregistrer les modifications</button>
+  </form>`);
+  $("profileForm").onsubmit=async e=>{
+    e.preventDefault();
+    const btn=$("saveProfileBtn"); btn.disabled=true; btn.textContent="Enregistrement...";
+    try{
+      u.firstName=$("eFirst").value.trim();
+      u.lastName=$("eLast").value.trim();
+      u.name=[u.firstName,u.lastName].filter(Boolean).join(" ");
+      u.pseudo=$("ePseudo").value.trim();
+      u.username=$("eUser").value.trim();
+      u.birth=$("eBirth").value||"";
+      u.gender=$("eGender").value||"";
+      u.country=$("eCountry").value.trim()||"Madagascar";
+      u.code=$("eCode").value.trim();
+      u.phone=$("ePhone").value.trim();
+      u.email=$("eEmail").value.trim();
+      u.bio=$("eBio").value;
+      u.location=$("eLoc").value;
+      u.relationshipStatus=$("eRelationship").value;
+      u.privacy={...(u.privacy||{}),
+        bio:$("bioPrivacy").value,
+        location:$("locationPrivacy").value,
+        relationshipStatus:$("relationshipStatusPrivacy").value,
+        username:$("usernamePrivacy").value
+      };
+      const af=$("eAvatar").files[0], cf=$("eCover").files[0];
+      if(af) u.avatar=await uploadProfileImage(af,"avatar");
+      if(cf) u.cover=await uploadProfileImage(cf,"cover");
+      await saveCurrentProfileToSupabase(u);
+      closeModal(); render(); toast("Profil enregistré sur Supabase.");
+    }catch(err){
+      console.error(err);
+      toast(err?.message||"Impossible d'enregistrer le profil.");
+      btn.disabled=false; btn.textContent="Enregistrer les modifications";
+    }
+  };
+}
+function editCover(){
+  modal("Photo de couverture",`<form id="coverForm"><label>Choisir une image<input id="coverFile" type="file" accept="image/*" required></label><button class="btn primary wide">Enregistrer</button></form>`);
+  $("coverForm").onsubmit=async e=>{
+    e.preventDefault();
+    try{
+      const f=$("coverFile").files[0];
+      const url=await uploadProfileImage(f,"cover");
+      const u=me(); u.cover=url; await saveCurrentProfileToSupabase(u);
+      closeModal(); render(); toast("Photo de couverture enregistrée.");
+    }catch(err){toast(err?.message||"Erreur d'enregistrement.");}
+  };
+}
+function openFindFriends(){modal("Trouver des amis",`<input id="friendSearch" placeholder="Rechercher un nom ou @username"><div id="friendResults" style="margin-top:10px">${renderSuggestions(10)}</div>`);$("friendSearch").oninput=()=>{$("friendResults").innerHTML=state.users.filter(u=>u.id!==state.current&&(displayName(u)+" "+u.username).toLowerCase().includes($("friendSearch").value.toLowerCase())).map(friendSuggestion).join("")};}
+function createEvent(){modal("Créer un événement",`<form id="eventForm"><label>Nom<input id="eventName" required></label><label>Date<input id="eventDate" type="datetime-local" required></label><label>Description<textarea id="eventDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("eventForm").onsubmit=e=>{e.preventDefault();state.events.push({id:uid("event"),ownerId:state.current,name:$("eventName").value,date:$("eventDate").value,description:$("eventDesc").value});save();closeModal();render();};}
+function renderBadge(){
+  const u=me();
+  const mine=(state.badgeRequests||[]).filter(r=>r.userId===state.current).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const latest=mine[0];
+  const statusLabel=latest?.status==="approved"?"Badge approuvé":latest?.status==="rejected"?"Demande refusée":latest?"Demande en attente":"Aucune demande";
+  const statusClass=latest?.status==="approved"?"approved":latest?.status==="rejected"?"rejected":latest?"pending":"empty";
+  const steps=[
+    ["01","Identité","Vérifier votre nom légal"],
+    ["02","Catégorie","Choisir votre catégorie"],
+    ["03","Justificatifs","Ajouter une preuve"],
+    ["04","Paiement","Renseigner la transaction"],
+    ["05","Confirmation","Envoyer la demande"]
+  ];
+  return `${routeBackBar("Menu","menu")}<section class="badge-page-v94">
+    <div class="badge-hero-v94">
+      <div class="badge-hero-icon-v94">✓</div>
+      <div><span class="eyebrow">TAFAß · VÉRIFICATION</span><h1>Badge bleu</h1><p>Suivez les 5 étapes de vérification de votre compte.</p></div>
+      <span class="badge-status-v94 ${statusClass}">${statusLabel}</span>
+    </div>
+    <div class="badge-steps-preview-v94">${steps.map(([n,t,d],i)=>`<article><span>${n}</span><div><b>${t}</b><small>${d}</small></div>${i<4?'<i>›</i>':''}</article>`).join("")}</div>
+    <div class="badge-info-card-v94"><div><b>Vérification mensuelle</b><small>25 000 Ar / mois · Yas Money, Airtel Money ou Orange Money</small></div><strong>25 000 Ar</strong></div>
+    ${latest?`<div class="badge-request-card-v94"><span>Dernière demande</span><b>${esc(latest.category||"Catégorie non définie")}</b><small>Statut : ${esc(latest.status||"pending")} · ${esc(latest.createdAt?.slice(0,10)||"")}</small></div>`:""}
+    <button type="button" class="btn primary wide badge-start-v94" data-action="startBadge">${latest?.status==="pending"?"Voir / reprendre la demande":"Commencer les 5 étapes"}</button>
+  </section>`;
+}
+function badgeWizard(){
+  let step=1,data={};
+  const titles=["Identité","Catégorie","Justificatifs","Paiement","Confirmation"];
+  const categories=["Personnalité publique","Président de la République","Personne publique","Créateur de contenu","Artiste","Entreprise","Page","Influenceur","Journaliste","Sportif","Institution","Organisation","Marque","Média","Professionnel","Autre"];
+  const show=()=>{
+    let body="";
+    if(step===1)body=`<div class="badge-step-card-v90"><div class="badge-step-icon-v90">◎</div><h3>Vérifier votre identité</h3><p>Ces informations seront transmises à l'administrateur pour examen.</p><label>Nom légal<input id="bIdentity" value="${esc(data.identity||"")}" required placeholder="Nom complet"></label><label>Identifiant Tafaß<input value="@${esc(me()?.username||"")}" readonly></label></div>`;
+    if(step===2)body=`<div class="badge-step-card-v90"><div class="badge-step-icon-v90">✓</div><h3>Votre catégorie</h3><p>Choisissez la catégorie qui décrit le mieux votre présence.</p><label>Catégorie<select id="bCategory">${categories.map(x=>`<option ${x===data.category?"selected":""}>${x}</option>`).join("")}</select></label></div>`;
+    if(step===3)body=`<div class="badge-step-card-v90"><div class="badge-step-icon-v90">▣</div><h3>Justificatifs</h3><p>Ajoutez un document ou une preuve pertinente. Le fichier reste local dans ce prototype.</p><label>Justificatif<input id="bProof" type="file" accept="image/*,.pdf"></label><div class="badge-proof-note-v90">Formats recommandés : image ou PDF.</div></div>`;
+    if(step===4)body=`<div class="badge-step-card-v90"><div class="badge-step-icon-v90">◇</div><h3>Paiement</h3><div class="badge-price-box-v90"><b>25 000 Ar</b><span>/ mois</span></div><div class="badge-money-list-v90"><div><b>Yas Money</b><span>+261 383 955 105</span></div><div><b>Airtel Money</b><span>+261 336 756 185</span></div><div><b>Orange Money</b><span>+261 379 594 257</span></div><small>Titulaire : <strong>Mahandry Hery RANDRIAMALALA</strong></small></div><label>Méthode<select id="bMethod"><option ${data.method==="Yas Money"?"selected":""}>Yas Money</option><option ${data.method==="Airtel Money"?"selected":""}>Airtel Money</option><option ${data.method==="Orange Money"?"selected":""}>Orange Money</option></select></label><label>Référence de transaction<input id="bRef" value="${esc(data.ref||"")}" required placeholder="Référence"></label></div>`;
+    if(step===5)body=`<div class="badge-step-card-v90"><div class="badge-success-mark-v90">✓</div><h3>Vérifiez votre demande</h3><div class="badge-summary-v90"><span>Identité<strong>${esc(data.identity||"—")}</strong></span><span>Catégorie<strong>${esc(data.category||"—")}</strong></span><span>Paiement<strong>${esc(data.method||"—")}</strong></span><span>Référence<strong>${esc(data.ref||"—")}</strong></span></div><p>En envoyant cette demande, vous confirmez que les informations fournies sont exactes. Le badge est mensuel et le renouvellement est nécessaire pour le conserver.</p></div>`;
+    modal(`Badge bleu · ${titles[step-1]}`,`<div class="badge-wizard-v90"><div class="badge-progress-v90">${titles.map((t,i)=>`<span class="${i+1<=step?"active":""}"><b>${i+1}</b><small>${t}</small></span>`).join("")}</div>${body}</div>`, `<button class="btn secondary" data-action="badgeBack">Retour</button><button class="btn primary" data-action="badgeNext">${step===5?"Envoyer la demande":"Continuer"}</button>`);
+    document.querySelector("[data-action=badgeBack]").onclick=()=>{if(step>1){step--;show()}else closeModal()};
+    document.querySelector("[data-action=badgeNext]").onclick=()=>{
+      if(step===1){data.identity=$("bIdentity")?.value.trim();if(!data.identity)return toast("Indiquez votre nom légal.");}
+      if(step===2)data.category=$("bCategory")?.value;
+      if(step===3){const proof=$("bProof")?.files?.[0];if(!proof)return toast("Ajoutez votre justificatif.");data.proofName=proof.name;}
+      if(step===4){data.method=$("bMethod")?.value;data.ref=$("bRef")?.value.trim();if(!data.method)return toast("Choisissez une méthode de paiement.");if(!data.ref)return toast("Ajoutez la référence de transaction.");}
+      if(step<5){step++;show()}else{state.badgeRequests.push({id:uid("badge"),userId:state.current,identity:data.identity,category:data.category,method:data.method,ref:data.ref,proofName:data.proofName||"",status:"pending",createdAt:new Date().toISOString()});notify(ADMIN_ID,"badge",`${displayName(me())} a envoyé une demande de badge bleu.`);save();closeModal();render();toast("Demande envoyée à l'administrateur");}
+    };
+  };show();
+}
+function badgeDecision(id,ok){const r=state.badgeRequests.find(x=>x.id===id);if(!r)return;r.status=ok?"approved":"rejected";const u=findUser(r.userId);if(u)u.verified=ok;if(u&&ok)notify(u.id,"badge","Votre badge bleu a été accepté.");save();render();toast(ok?"Badge accordé":"Demande refusée");}
+function forgot(){
+  modal("Mot de passe oublié",`<div class="forgot-premium-v92">
+    <div class="forgot-hero-v92"><span>↻</span><div><b>Réinitialiser votre mot de passe</b><small>Un lien sécurisé sera envoyé par e-mail.</small></div></div>
+    <form id="forgotForm" class="premium-form">
+      <label>Adresse e-mail<input id="forgotIdentifier" type="email" autocomplete="email" required placeholder="votre@email.com"></label>
+      <button class="btn primary wide" type="submit">Envoyer le lien de réinitialisation</button>
+    </form>
+  </div>`);
+  $("forgotForm").onsubmit=async e=>{
+    e.preventDefault();
+    const email=$("forgotIdentifier").value.trim().toLowerCase();
+    if(!supabaseReady()) return toast("Supabase n'est pas configuré.");
+    const {error}=await SB.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+    if(error) return toast(error.message||"Impossible d'envoyer l'e-mail.");
+    closeModal();
+    toast("Lien de réinitialisation envoyé par e-mail.");
+  };
+}
+
+function initAuth(){
+  countryData.forEach(([name,code])=>$("rCountry").insertAdjacentHTML("beforeend",`<option value="${esc(code)}" data-name="${esc(name)}">${esc(name)} (${esc(code)})</option>`));
+  $("rCountry").value="+261";$("rCode").value="+261";
+  $("rCountry").onchange=()=>{$("rCode").value=$("rCountry").value;};
+  const showRegisterView=()=>{
+    try{
+      registerStep=1;
+      showRegisterStep();
+      const loginView=$("loginView"), registerView=$("registerView");
+      if(loginView) loginView.classList.add("hidden");
+      if(registerView) registerView.classList.remove("hidden");
+    }catch(err){
+      console.error("Ouverture inscription:",err);
+      const loginView=$("loginView"), registerView=$("registerView");
+      if(loginView) loginView.classList.add("hidden");
+      if(registerView) registerView.classList.remove("hidden");
+      toast("Impossible d'ouvrir l'inscription. Rechargez la page.");
+    }
+  };
+  const showLoginView=()=>{
+    const registerView=$("registerView"), loginView=$("loginView");
+    if(registerView) registerView.classList.add("hidden");
+    if(loginView) loginView.classList.remove("hidden");
+  };
+  const showRegisterBtn=$("showRegister");
+  const showLoginBtn=$("showLogin");
+  if(showRegisterBtn) showRegisterBtn.addEventListener("click",e=>{e.preventDefault();showRegisterView();});
+  if(showLoginBtn) showLoginBtn.addEventListener("click",e=>{e.preventDefault();showLoginView();});
+  document.querySelectorAll("[data-toggle-password]").forEach(b=>b.onclick=()=>{const i=$(b.dataset.togglePassword);i.type=i.type==="password"?"text":"password";b.textContent=i.type==="password"?"Afficher":"Masquer";});
+  $("loginForm").onsubmit=async e=>{
+    e.preventDefault();
+    if(!supabaseReady()) return toast("Supabase n'est pas configuré.");
+    const id=$("loginIdentifier").value.trim();
+    const pass=$("loginPassword").value;
+    let email=id.toLowerCase();
+    if(!email.includes("@")){
+      const {data:phoneProfile,error:phoneError}=await SB.from("profiles").select("email").eq("phone",$("loginIdentifier").value.trim()).maybeSingle();
+      if(phoneError || !phoneProfile?.email) return toast("Compte introuvable. Utilisez votre e-mail.");
+      email=phoneProfile.email;
+    }
+    const {data,error}=await SB.auth.signInWithPassword({email,password:pass});
+    if(error) return toast("Identifiants incorrects.");
+    if(!data.session) return toast("Connexion non disponible. Vérifiez votre e-mail.");
+    await hydrateSupabaseSession();
+    render();
+  };
+  $("forgotBtn").onclick=forgot;
+  $("rPass").oninput=updateStrength;
+  $("changeAvatarBtn").onclick=()=>$("rAvatarFile").click();
+  $("rAvatarFile").onchange=()=>{const f=$("rAvatarFile").files[0];fileToData(f).then(x=>{registerAvatar=x;$("registerAvatar").innerHTML=x?`<img src="${esc(x)}">`:"T";});};
+  $("removeAvatarBtn").onclick=()=>{registerAvatar="";$("registerAvatar").textContent="T";};
+  $("regBack").onclick=()=>{if(registerStep>1){registerStep--;showRegisterStep()}else{$("showLogin").click();}};
+  $("regNext").onclick=()=>{if(validateRegStep(registerStep)){if(registerStep<5){registerStep++;showRegisterStep()}}};
+  $("registerForm").onsubmit=async e=>{e.preventDefault();if(registerStep!==5)return;if(!validateRegStep(5))return;await createAccount();};
+}
+function showRegisterStep(){
+  document.querySelectorAll(".reg-step").forEach(x=>x.classList.toggle("hidden",Number(x.dataset.step)!==registerStep));
+  const progress=$("registerProgress");
+  if(progress) progress.style.width=(registerStep*20)+"%";
+  const titles=["Informations personnelles","Pays et téléphone","Compte","Photo de profil","Finalisation"];
+  const title=$("registerStepTitle");
+  if(title) title.textContent=`Étape ${registerStep}/5 — ${titles[registerStep-1]}`;
+  const back=$("regBack"), next=$("regNext"), submit=$("regSubmit");
+  if(back) back.textContent=registerStep===1?"Annuler":"Retour";
+  if(next) next.classList.toggle("hidden",registerStep===5);
+  if(submit) submit.classList.toggle("hidden",registerStep!==5);
+  if(registerStep===5) buildSummary();
+}
+function validateRegStep(s){
+  if(s===1){
+    if(!$("rFirst").value.trim()||!$("rLast").value.trim()||!$("rBirth").value||!$("rUsername").value.trim())return toast("Complétez toutes les informations."),false;
+  }
+  if(s===2){if(!$("rPhone").value.trim())return toast("Entrez votre numéro."),false;}
+  if(s===3){
+    const p=$("rPass").value;
+    if(p.length<6)return toast("Le mot de passe doit contenir au moins 6 caractères."),false;
+    if(p!==$("rPass2").value)return toast("Les mots de passe ne correspondent pas."),false;
+    if(!$("rEmail").value.trim())return toast("Entrez votre e-mail."),false;
+  }
+  if(s===5&&!$("rTerms").checked)return toast("Acceptez les conditions pour continuer."),false;
+  return true;
+}
+function updateStrength(){const p=$("rPass").value;let score=0;if(p.length>=6)score++;if(/[A-Z]/.test(p))score++;if(/[0-9]/.test(p))score++;if(/[^A-Za-z0-9]/.test(p))score++;$("strengthBar").style.width=(score*25)+"%";$("strengthText").textContent=["Très faible","Faible","Moyen","Bon","Fort"][score];}
+function buildSummary(){const country=$("rCountry").selectedOptions[0]?.textContent||"";$("registerSummary").innerHTML=`<b>${esc($("rFirst").value)} ${esc($("rLast").value)}</b><br>@${esc($("rUsername").value)}<br>${esc($("rEmail").value)}<br>${esc(country)} · ${esc($("rCode").value)} ${esc($("rPhone").value)}<br>Photo : ${registerAvatar?"Ajoutée":"Avatar par défaut"}`;}
+async function createAccount(){
+  const btn=$("regSubmit");
+  const originalText=btn?.textContent||"Créer mon compte";
+
+  const setButton=(text,disabled=true)=>{
+    if(btn){
+      btn.disabled=disabled;
+      btn.textContent=text;
+    }
+  };
+
+  const withTimeout=(promise,ms=20000)=>Promise.race([
+    promise,
+    new Promise((_,reject)=>setTimeout(
+      ()=>reject(new Error("TIMEOUT_SUPABASE")),
+      ms
+    ))
+  ]);
+
+  try{
+    if(!supabaseReady()){
+      return toast("Supabase JS n'est pas chargé. Rechargez l'application.");
+    }
+
+    const email=$("rEmail").value.trim().toLowerCase();
+    const password=$("rPass").value;
+    const username=$("rUsername").value.trim().toLowerCase();
+    const rawPhone=$("rPhone").value.trim().replace(/\s/g,"");
+    const country=$("rCountry").selectedOptions[0]?.dataset.name||"Madagascar";
+    const phoneCode=$("rCode").value;
+    const phone=phoneCode+rawPhone;
+
+    if(!email) return toast("Entrez votre e-mail.");
+    if(password.length<6) return toast("Le mot de passe doit contenir au moins 6 caractères.");
+    if(!/^[a-zA-Z0-9._-]{3,30}$/.test(username))
+      return toast("Nom d'utilisateur invalide.");
+    if(rawPhone.length<6) return toast("Numéro de téléphone invalide.");
+
+    const metadata={
+      first_name:$("rFirst").value.trim(),
+      last_name:$("rLast").value.trim(),
+      birth:$("rBirth").value||null,
+      gender:$("rGender").value||"",
+      username,
+      country,
+      phone_code:phoneCode,
+      phone,
+      email,
+      location:country==="Madagascar"?"Madagascar":country
+    };
+
+    setButton("Création du compte...");
+
+    // One and only one Auth signup call.
+    const result=await withTimeout(
+      SB.auth.signUp({
+        email,
+        password,
+        options:{data:metadata}
+      }),
+      20000
+    );
+
+    const data=result?.data;
+    const error=result?.error;
+
+    if(error){
+      console.error("Supabase Auth signup:",error);
+
+      const msg=String(error.message||"");
+      if(/already registered|already exists|user already/i.test(msg))
+        return toast("Cet e-mail possède déjà un compte.");
+      if(/database error|error saving new user|trigger|profiles/i.test(msg))
+        return toast("Supabase Auth fonctionne, mais le profil n'a pas pu être créé.");
+      if(/password/i.test(msg))
+        return toast("Mot de passe invalide : 6 caractères minimum.");
+      if(/email/i.test(msg))
+        return toast("Adresse e-mail invalide.");
+      return toast("Erreur Supabase : "+msg);
+    }
+
+    if(!data?.user){
+      return toast("Supabase n'a pas créé l'utilisateur.");
+    }
+
+    registerAvatar="";
+
+    if(data.session){
+      try{
+        await SB.auth.setSession(data.session);
+        await hydrateSupabaseSession();
+      }catch(sessionError){
+        console.warn("Session après inscription:",sessionError);
+      }
+      render();
+      toast("Compte créé avec succès !");
+    }else{
+      // Confirm email is enabled in the project.
+      $("registerView").classList.add("hidden");
+      $("loginView").classList.remove("hidden");
+      toast("Compte créé ! Vérifiez votre e-mail pour l'activer.");
+    }
+
+  }catch(err){
+    console.error("Création compte:",err);
+
+    if(err?.message==="TIMEOUT_SUPABASE"){
+      toast("Supabase ne répond pas. Vérifiez Internet et réessayez.");
+    }else{
+      toast("Erreur lors de la création : "+(err?.message||"erreur inconnue"));
+    }
+  }finally{
+    setButton(originalText,false);
+  }
+}async function boot(){
+  try{applyTheme();}catch(e){console.error(e)}
+  try{initAuth();}catch(e){console.error("initAuth:",e)}
+  try{setupGlobal();}catch(e){console.error("setupGlobal:",e)}
+  try{openDeepLink();}catch(e){console.error("deepLink:",e)}
+  try{localizeApp();}catch(e){console.error("localize:",e)}
+  const splash=$("splash");
+  if(splash){
+    const dots=[...splash.querySelectorAll(".splash-dots i")];
+    dots.forEach((dot,i)=>setTimeout(()=>{dot.classList.add("active");setTimeout(()=>{dot.classList.remove("active");dot.classList.add("done");},260);},i*500));
+  }
+  await hydrateSupabaseSession();
+  const leave=()=>{
+    if(splash){splash.classList.add("hide");setTimeout(()=>splash.remove(),550);}
+    if(!state.current){$("authScreen").classList.remove("hidden");$("appScreen").classList.add("hidden")}
+    else render();
+  };
+  setTimeout(leave,3050);
+}
+
+window.addEventListener("error",e=>{console.error(e.error||e.message);if($("splash")){$("splash").classList.add("hide");$("authScreen").classList.remove("hidden");}});
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();
+})();
