@@ -558,41 +558,42 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   }
 
   const id=crypto.randomUUID();
-  const payload={
+  const basePayload={
     id,
     owner_id: ownerId,
     title: "Publication",
-    text: String(text||""),
     media_url: media_url || null,
     media_type,
     visibility: postVisibilityToDb(visibility)
   };
 
-  // Compatibility with both canonical owner_id and older user_id schemas.
-  let insertResult=await SB.from("posts").insert(payload);
-  if(insertResult.error && /owner_id.*column|column.*owner_id|could not find.*owner_id/i.test(insertResult.error.message||"")){
-    const legacyPayload={...payload};
-    delete legacyPayload.owner_id;
-    legacyPayload.user_id=ownerId;
-    insertResult=await SB.from("posts").insert(legacyPayload);
+  // The deployed database reports that `posts.text` does not exist.
+  // Try the canonical current field `content`, then the legacy `text`
+  // only if the live schema explicitly asks for it.
+  const textValue=String(text||"");
+  let payload={...basePayload,content:textValue};
+  let result=await SB.from("posts").insert(payload);
+
+  if(result.error && /column .*content.*does not exist|could not find the 'content' column|schema cache/i.test(result.error.message||"")){
+    payload={...basePayload,text:textValue};
+    result=await SB.from("posts").insert(payload);
   }
 
-  const error=insertResult.error;
+  const error=result.error;
   if(error){
     if(uploadedPath){
       try{ await SB.storage.from("posts").remove([uploadedPath]); }catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
     }
     const msg=[error.message,error.details,error.hint].filter(Boolean).join(" — ");
-    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par les règles de sécurité Supabase (RLS). Vérifiez la policy posts_insert_own. "+msg);
+    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par les règles de sécurité Supabase (RLS). "+msg);
     if(/foreign key|profiles/i.test(msg)) throw new Error("Le profil Supabase de ce compte est introuvable. "+msg);
-    if(/column .* does not exist|could not find the .* column/i.test(msg)) throw new Error("Le schéma Supabase de la table posts n'est pas compatible avec cette version de Tafaß. "+msg);
     throw new Error(msg||"Erreur Supabase lors de la publication.");
   }
 
   return {
     id,
     user_id: ownerId,
-    content: String(text||""),
+    content: textValue,
     media_url: payload.media_url || "",
     media_type: payload.media_type,
     visibility: payload.visibility,
@@ -1530,7 +1531,7 @@ function openComposer(kind="post"){
       const created=await createSupabasePost({text,file,visibility,kind:publishKind});
       const local={
         id:created.id, ownerId:created.user_id, ownerType:"user", title:"Publication",
-        text:created.content ?? text, media:created.media_url, mediaType:created.media_type,
+        text:created.content, media:created.media_url, mediaType:created.media_type,
         visibility:({public:"Public",friends:"Amis",private:"Moi uniquement"}[created.visibility]||visibility),
         allowedUsers:[], tags:[], createdAt:created.created_at, editedAt:created.updated_at,
         shares:0, reactions:{}, myReaction:{}
