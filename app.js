@@ -43,6 +43,10 @@ async function startTafaRealtime(){
   if(!supabaseReady()||!state.current) return;
   stopTafaRealtime();
   await loadSupabaseNotifications();
+
+  // V18.4 REALTIME: each channel is scoped when possible to avoid
+  // unnecessary refreshes while keeping the existing UI unchanged.
+  const uid=state.current;
   const specs=[
     ['profiles','profile-change',()=>{loadSupabaseProfiles().then(render)}],
     ['posts','post-change',()=>refreshRealtimePosts()],
@@ -50,14 +54,23 @@ async function startTafaRealtime(){
     ['comments','comment-change',()=>refreshRealtimePosts()],
     ['friend_requests','friend-request-change',()=>refreshRealtimeFriends()],
     ['friendships','friendship-change',()=>refreshRealtimeFriends()],
-    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render)],
+    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render),`recipient_id=eq.${uid}`],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)]
   ];
-  specs.forEach(([table,name,refresh])=>{
-    let ch=SB.channel('tafa-v18-'+name)
-      .on('postgres_changes',{event:'*',schema:'public',table},payload=>{ console.debug('[TAFAß REALTIME]',table,payload.eventType); refresh(); });
-    ch.subscribe(status=>{if(status==='CHANNEL_ERROR')console.warn('Realtime channel error:',table);});
+
+  specs.forEach(([table,name,refresh,filter])=>{
+    const config={event:'*',schema:'public',table};
+    if(filter) config.filter=filter;
+    const ch=SB.channel('tafa-v18.4-'+name)
+      .on('postgres_changes',config,payload=>{
+        console.debug('[TAFAß V18.4 REALTIME]',table,payload.eventType);
+        Promise.resolve(refresh()).catch(err=>console.warn('Realtime refresh '+table+':',err));
+      });
+    ch.subscribe(status=>{
+      if(status==='SUBSCRIBED') console.debug('[TAFAß V18.4 REALTIME] subscribed:',table);
+      if(status==='CHANNEL_ERROR'||status==='TIMED_OUT') console.warn('Realtime channel error:',table,status);
+    });
     tafaRealtimeChannels.push(ch);
   });
 }
@@ -1531,6 +1544,10 @@ function bindPageEvents(){
     try{
       const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,content:text});
       if(error)throw error;
+      const post=state.posts.find(p=>p.id===postId);
+      if(post?.ownerId && post.ownerId!==state.current){
+        await notify(post.ownerId,"comment",`${displayName(me())} a commenté votre publication.`,postId);
+      }
       await loadSupabasePosts();save();render();toast("Commentaire publié ✓");
     }catch(err){console.error(err);toast("Commentaire impossible : "+(err.message||"erreur Supabase"));}
   });
@@ -1790,6 +1807,9 @@ async function reactPost(id,type){
     const next=old===type?null:type;
     const {data,error}=await SB.rpc("tafa_set_post_reaction",{p_post_id:id,p_reaction:next});
     if(error)throw error;
+    if(next && p.ownerId && p.ownerId!==state.current){
+      await notify(p.ownerId,"reaction",`${displayName(me())} a réagi à votre publication.`,id);
+    }
     await loadSupabasePosts();save();render();
   }catch(err){
     console.error("reactPost:",err);
@@ -1803,6 +1823,9 @@ async function sharePost(id){
   try{
     const {error}=await SB.rpc("tafa_increment_post_share",{p_post_id:id});
     if(error)throw error;
+    if(p.ownerId && p.ownerId!==state.current){
+      await notify(p.ownerId,"share",`${displayName(me())} a partagé votre publication.`,id);
+    }
     await loadSupabasePosts();
     save(); render();
     toast("Publication partagée ✓");
