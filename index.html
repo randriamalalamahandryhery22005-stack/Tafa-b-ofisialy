@@ -24,13 +24,14 @@
     <div id="loginView" class="auth-card">
       <div class="auth-head"><h1>Connexion</h1><p>Retrouvez votre communauté.</p></div>
       <form id="loginForm">
-        <label>E-mail ou numéro de téléphone<input id="loginIdentifier" autocomplete="username" required></label>
+        <label>E-mail<input id="loginIdentifier" autocomplete="username" required></label>
         <label>Mot de passe
           <span class="password-wrap"><input id="loginPassword" type="password" autocomplete="current-password" required><button type="button" data-toggle-password="loginPassword">Afficher</button></span>
         </label>
         <button class="btn primary wide" type="submit">Se connecter</button>
       </form>
       <button class="link-btn" id="forgotBtn">Mot de passe oublié ?</button>
+      <div id="savedAccounts" class="saved-accounts" aria-label="Comptes enregistrés"></div>
       <div class="divider"><span>ou</span></div>
       <button type="button" class="btn success wide" id="showRegister">Créer un nouveau compte</button>
       <p class="auth-note">Connexion sécurisée par Supabase. Vos données de compte sont enregistrées sur le serveur.</p>
@@ -135,11 +136,13 @@
   <script src="supabase-config.js"></script>
   
 <script src="app.js"></script>
+  <script src="ui-polish.js"></script>
 
 
 
 
 
 
+<script src="tafa-v26-ui.js"></script>
 </body>
 </html>

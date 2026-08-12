@@ -713,6 +713,8 @@ let searchFilter = "Tout";
 let activeConversation = null;
 let registerStep = 1;
 let registerAvatar = "";
+let profileFriendsAll = false;
+let committedSearchQuery = "";
 let editingPageId = null;
 let profileTab = "posts";
 let profileViewingId = null;
@@ -982,7 +984,13 @@ function requestRowPremium(r){
   return `<article class="friend-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))}</b><span>@${esc(u.username||"user")}</span><small>Invitation d'ami</small></div><div class="friend-actions"><button class="btn primary" data-action="acceptFriend" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="declineFriend" data-id="${r.id}">Refuser</button></div></article>`;
 }
 function friendSuggestionPremium(u){
-  return `<article class="friend-card suggestion-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))} ${verified(u)}</b><span>@${esc(u.username||"user")}</span><small>${mutualCount(u.id)} ami(s) en commun</small></div><div class="friend-actions"><button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button></div></article>`;
+  const friends=isFriend(u.id);
+  const action=friends
+    ? `<button class="btn secondary" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`
+    : (friendActionState(u.id)==="sent"
+      ? `<button class="btn secondary" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id)?.id||""}">Invitation envoyée</button>`
+      : `<button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button>`);
+  return `<article class="friend-card suggestion-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))} ${verified(u)}</b><span>@${esc(u.username||"user")}</span><small>${mutualCount(u.id)} ami(s) en commun</small></div><div class="friend-actions">${action}</div></article>`;
 }
 function isFriend(id){return state.friendships.some(f=>(f.a===state.current&&f.b===id)||(f.b===state.current&&f.a===id));}
 function friendRow(u){return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${mutualCount(u.id)} ami(s) en commun</small></div><div class="actions"><button class="btn secondary" data-action="viewProfile" data-id="${u.id}">Profil</button><button class="btn ghost danger" data-action="removeFriend" data-id="${u.id}">Supprimer</button></div></div>`}
@@ -1017,30 +1025,30 @@ async function refreshSearchProfiles(){
 
 function renderSearch(){
   const pageBar=pageContextBar();
-  const q=($("globalSearch")?.value||window.globalSearchQuery||"").trim().toLowerCase();
+  const inputValue=window.globalSearchQuery||($('globalSearch')?.value||'');
+  const q=(committedSearchQuery||'').trim().toLowerCase();
+  const people=state.users.filter(x=>x.id!==state.current);
+  const pageSuggestions=state.pages.slice(0,6);
+  const profileSuggestions=people.slice(0,6);
   const all=[
-    ...state.users.map(x=>({
-      kind:"Personnes",
-      title:displayName(x),
-      sub:"@"+(x.username||"user"),
-      searchText:[displayName(x),x.username,x.pseudo,x.email,x.firstName,x.lastName,x.country].filter(Boolean).join(" "),
-      obj:x
-    })),
+    ...state.users.map(x=>({kind:"Personnes",title:displayName(x),sub:"@"+(x.username||"user"),searchText:[displayName(x),x.username,x.pseudo,x.email,x.firstName,x.lastName,x.country].filter(Boolean).join(" "),obj:x})),
     ...state.pages.map(x=>({kind:"Pages",title:x.name,sub:(x.category||"Page")+" · PAGE",searchText:[x.name,x.username,x.category,x.description].filter(Boolean).join(" "),obj:x})),
     ...state.groups.map(x=>({kind:"Groupes",title:x.name,sub:"Groupe",searchText:[x.name,x.description].filter(Boolean).join(" "),obj:x})),
-    ...state.posts.map(x=>({kind:x.mediaType==="video"||x.mediaType==="reel"?"Reels":x.mediaType?"Photos":"Publications",title:(x.title||x.text||"Publication").slice(0,80),sub:"Contenu Tafaß",searchText:[x.title,x.text,x.ownerName].filter(Boolean).join(" "),obj:x}))
+    ...state.posts.map(x=>({kind:x.mediaType==="video"||x.mediaType==="reel"?"Vidéos":x.mediaType?"Photos":"Publications",title:(x.title||x.text||"Publication").slice(0,80),sub:"Contenu Tafaß",searchText:[x.title,x.text,x.ownerName].filter(Boolean).join(" "),obj:x}))
   ];
-  const filters=["Tout","Personnes","Comptes","Pages","Groupes","Publications","Photos","Reels"];
-  let results=q?all.filter(x=>(x.searchText||`${x.title} ${x.sub} ${x.kind}`).toLowerCase().includes(q)):all.slice(0,12);
-  if(searchFilter!=="Tout")results=results.filter(x=>searchFilter==="Comptes"?x.kind==="Personnes":x.kind===searchFilter);
+  const filters=["Tout","Personnes","Pages","Groupes","Publications","Photos","Vidéos"];
+  let results=q?all.filter(x=>(x.searchText||`${x.title} ${x.sub} ${x.kind}`).toLowerCase().includes(q)):[];
+  if(searchFilter!=="Tout")results=results.filter(x=>x.kind===searchFilter);
+  const grouped=filters.filter(f=>f!=="Tout").map(kind=>({kind,items:results.filter(x=>x.kind===kind)})).filter(g=>g.items.length);
+  const suggestions=`<div class="search-suggestion-page"><div class="search-suggestion-head"><h2>Suggestions</h2><p>Personnes et Pages suggérées</p></div><div class="search-suggestion-list">${profileSuggestions.map(u=>`<button class="suggestion-row-ui" data-action="openSearchResult" data-kind="Personnes" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>Compte</small></span></button>`).join("")}${pageSuggestions.map(pg=>`<button class="suggestion-row-ui" data-action="openSearchResult" data-kind="Pages" data-id="${pg.id}">${pg.avatar?`<span class="avatar sm"><img src="${esc(pg.avatar)}"></span>`:`<span class="avatar sm">▤</span>`}<span><b>${esc(pg.name)}</b><small>Page</small></span></button>`).join("")}</div></div>`;
+  const sections=grouped.map(g=>`<section class="search-section-ui"><div class="search-section-title-ui"><h2>${g.kind}</h2><button class="link-btn" data-action="searchFilter" data-filter="${g.kind}">Voir tout</button></div><div class="search-section-list-ui">${g.items.slice(0,8).map(searchRowPremium).join("")}</div></section>`).join("");
   return `${pageBar}<section class="search-premium-v90">
-    <div class="search-hero-v90"><div class="search-logo-v90">⌕</div><div><span class="eyebrow">TAFAß · EXPLORER</span><h1>Rechercher</h1><p>Trouvez rapidement une personne, un compte, une Page, un groupe ou un contenu.</p></div></div>
-    <div class="search-box-v90"><span>⌕</span><input id="pageSearchInput" value="${esc(window.globalSearchQuery||($('globalSearch')?.value||''))}" placeholder="Rechercher sur Tafaß"><button class="search-clear-v90" data-action="clearPageSearch">Effacer</button></div>
-    <div class="search-filter-grid-v90">${filters.map(f=>`<button class="search-filter-v90 ${searchFilter===f?"active":""}" data-action="searchFilter" data-filter="${f}"><span>${f==="Tout"?"✦":f==="Personnes"?"♧":f==="Comptes"?"◯":f==="Pages"?"▤":f==="Groupes"?"◉":f==="Publications"?"▣":f==="Photos"?"▧":f==="Reels"?"◆":"◆"}</span><b>${f}</b></button>`).join("")}</div>
-    <div class="search-result-stack-v90">${results.length?results.map(searchRowPremium).join(""):`<div class="search-empty-v90"><div>⌕</div><b>Aucun résultat</b><span>Essayez un autre terme ou filtre.</span></div>`}</div>
-    ${state.searches.length?`<div class="search-history-v90"><div><b>Recherches récentes</b><button class="link-btn" data-action="clearSearches">Effacer</button></div><div class="history-chips">${state.searches.slice(0,8).map(x=>`<button data-action="useSearch" data-q="${esc(x)}">⌕ ${esc(x)}</button>`).join("")}</div></div>`:""}
+    <div class="search-hero-v90"><div class="search-logo-v90">⌕</div><div><span class="eyebrow">TAFAß · EXPLORER</span><h1>Rechercher</h1><p>Trouvez rapidement une personne, une Page, un groupe ou un contenu.</p></div></div>
+    <form id="pageSearchForm" class="search-box-v90"><span>⌕</span><input id="pageSearchInput" value="${esc(inputValue)}" placeholder="Rechercher sur Tafaß"><button class="search-submit-v90" type="submit">Rechercher</button></form>
+    ${q?`<div class="search-filter-grid-v90">${filters.map(f=>`<button type="button" class="search-filter-v90 ${searchFilter===f?"active":""}" data-action="searchFilter" data-filter="${f}"><b>${f}</b></button>`).join("")}</div><div class="search-result-stack-v90">${sections||`<div class="search-empty-v90"><div>⌕</div><b>Aucun résultat</b><span>Essayez un autre terme.</span></div>`}</div>`:suggestions}
   </section>`;
 }
+
 function searchRowPremium(r){
   const clickable=r.kind==="Personnes"?`data-action="openSearchResult" data-kind="Personnes" data-id="${r.obj.id}"`:r.kind==="Pages"?`data-action="openSearchResult" data-kind="Pages" data-id="${r.obj.id}"`:`data-action="openSearchResult" data-kind="${r.kind}" data-id="${r.obj.id}"`;
   const media=r.obj?.media?`<img class="search-result-media" src="${esc(r.obj.media)}" alt="">`:"";
@@ -1101,7 +1109,7 @@ function renderProfile(u){
         <article class="about-info-card-v94"><span class="about-icon-v94">➜</span><div><b>Suivis</b><strong>${following}</strong></div></article>
         <article class="about-info-card-v94"><span class="about-icon-v94">🔒</span><div><b>Confidentialité</b><strong>${own?"Vous contrôlez la visibilité de vos informations.":"Selon les réglages de confidentialité de ce profil."}</strong>${own?`<button class="btn secondary about-manage-btn-v94" data-action="editProfile">Gérer les informations</button>`:""}</div></article>
       </div></div>`;
-    if(profileTab==="friends") return `<div class="profile-only-panel premium-about-panel"><div class="profile-section-title"><span>Amis</span><small>${friends}</small></div><div class="profile-friends-grid">${friendsList.length?friendsList.map(friendSuggestionPremium).join(""):`<div class="empty-state"><b>Aucun ami</b><span>Ce profil n'a pas encore d'ami affichable.</span></div>`}</div></div>`;
+    if(profileTab==="friends") { const shown=profileFriendsAll?friendsList:friendsList.slice(0,8); return `<div class="profile-only-panel premium-about-panel"><div class="profile-section-title"><span>Amis</span><small>${friends}</small></div><div class="profile-friends-grid">${shown.length?shown.map(friendSuggestionPremium).join(""):`<div class="empty-state"><b>Aucun ami</b><span>Ce profil n'a pas encore d'ami affichable.</span></div>`}</div>${friendsList.length>8&&!profileFriendsAll?`<button class="btn secondary friends-view-all-btn" data-action="profileFriendsAll">Voir tout</button>`:""}</div>`; }
     const list=profileTab==="photos"?photos:profileTab==="reels"?reels:posts;
     const title=profileTab==="photos"?"Photos":profileTab==="reels"?"Reels":"Publications";
     const mediaType=profileTab==="photos"?"photo":profileTab==="reels"?"reel":null;
@@ -1112,7 +1120,7 @@ function renderProfile(u){
     <div class="social-cover" style="${coverStyle}"><div class="cover-shade"></div>${own?`<button class="profile-camera cover-camera" data-action="editCover">📷</button>`:""}</div>
     <div class="social-profile-body profile-identity-under-avatar">
       <div class="profile-avatar-wrap"><div class="profile-avatar-large">${u.avatar?`<img src="${esc(u.avatar)}" alt="Photo de profil">`:esc((displayName(u)[0]||"T").toUpperCase())}</div>${own?`<button class="profile-camera avatar-camera" data-action="editProfile">📷</button>`:""}</div>
-      <div class="profile-name-block profile-name-below-avatar"><div class="profile-type-line">${typePill(u)} ${verified(u)}</div><h1>${esc(displayName(u))}${pseudo}</h1><div class="profile-handle">${profileVisibility(u,"username",own)?`@${esc(u.username||"utilisateur")}`:"Identifiant privé"}</div></div>
+      <div class="profile-name-block profile-name-below-avatar"><h1>${esc(displayName(u))}${pseudo}</h1><div class="profile-type-line">${typePill(u)} ${verified(u)}</div><div class="profile-handle">${profileVisibility(u,"username",own)?`@${esc(u.username||"utilisateur")}`:"Identifiant privé"}</div></div>
       <p class="social-bio">${esc(profileValue(u,"bio","Bienvenue dans l'univers Tafaß."))}</p>
       <div class="profile-details">${profileVisibility(u,"location",own)&&u.location?`<span>⌖ ${esc(u.location)}</span>`:""}<span>✦ ${u.type==="page"?"Page":"Compte"}</span></div>
       <div class="profile-actions-premium">${own?`<button class="btn primary profile-main-btn" data-action="createStory">＋ Ajouter une story</button><button class="btn secondary profile-main-btn" data-action="editProfile">✎ Modifier le profil</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:admin?`<button class="btn primary profile-main-btn" data-action="follow" data-id="${u.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:`<button class="btn primary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button>${friendActionState(u.id)==="friends"?`<button class="btn secondary profile-main-btn" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`:friendActionState(u.id)==="sent"?`<button class="btn secondary profile-main-btn" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id).id}">Invitation envoyée</button>`:friendActionState(u.id)==="received"?`<button class="btn secondary profile-main-btn" data-action="acceptFriend" data-id="${incomingFriendRequest(u.id).id}">Accepter l'invitation</button>`:`<button class="btn secondary profile-main-btn" data-action="addFriend" data-id="${u.id}">＋ Ajouter</button>`}<button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`}</div>
@@ -1573,7 +1581,7 @@ function bindPageEvents(){
   document.querySelectorAll("[data-chat-form]").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const id=form.dataset.chatForm,text=form.querySelector('[name="text"]').value.trim(),input=form.querySelector('input[type=file]'),files=[...(input?.files||[])];if(!text&&!files.length)return;const payload=[];for(const f of files){const data=await fileToData(f);payload.push({name:f.name,type:f.type,size:f.size,data});}sendMessage(id,text,payload);form.reset();render();});
   const theme=$("themeSelect");if(theme)theme.onchange=()=>{state.settings.dark=theme.value==="dark";save();applyTheme();};
   const lang=$("languageSelect");if(lang)lang.onchange=()=>{state.settings.language=lang.value;save();toast("Langue enregistrée");};
-  const ps=$("pageSearchInput");if(ps){ps.oninput=()=>{window.globalSearchQuery=ps.value;const top=$("globalSearch");if(top)top.value=ps.value;clearTimeout(window.pageSearchTimer);window.pageSearchTimer=setTimeout(render,160);};ps.onkeydown=e=>{if(e.key==="Enter"){if(openSearchDeepLink(ps.value))return;const q=ps.value.trim();if(q){state.searches=[q,...state.searches.filter(x=>x!==q)].slice(0,15);save();}render();}};}
+  const ps=$("pageSearchInput");const pf=$("pageSearchForm");if(ps){ps.oninput=()=>{window.globalSearchQuery=ps.value;const top=$("globalSearch");if(top)top.value=ps.value;};}if(pf){pf.onsubmit=e=>{e.preventDefault();const q=ps?.value.trim()||"";if(!q)return;committedSearchQuery=q;if(openSearchDeepLink(q))return;state.searches=[q,...state.searches.filter(x=>x!==q)].slice(0,15);save();render();};}
   const ms=$("mediaSearchInput");if(ms)ms.oninput=()=>{window.mediaSearch=ms.value;clearTimeout(window.mediaSearchTimer);window.mediaSearchTimer=setTimeout(render,180);};
   const fs=$("friendsSearchInput");if(fs)fs.oninput=()=>{friendSearch=fs.value;clearTimeout(window.friendSearchTimer);window.friendSearchTimer=setTimeout(render,150);};
   const cs=$("conversationSearch");if(cs)cs.oninput=()=>{const q=cs.value.toLowerCase().trim();document.querySelectorAll(".conversation-row").forEach(x=>x.style.display=x.textContent.toLowerCase().includes(q)?"flex":"none");const box=$("messagePeopleResults");if(box){if(!q){box.innerHTML="";return;}const people=state.users.filter(u=>u.id!==state.current&&(displayName(u)+" "+(u.username||"")).toLowerCase().includes(q)).slice(0,6);box.innerHTML=people.map(u=>`<button class="message-person-result" data-action="startPersonConversation" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")}</small></span>${isOnline(u)?`<i class="online-dot"></i>`:""}</button>`).join("")||`<div class="message-search-empty">Aucune personne</div>`;}};
@@ -1651,6 +1659,7 @@ async function handleAction(e,el){
   if(a==="friendTab"){friendTab=el.dataset.tab||"friends";return render();}
 
   if(a==="searchFilter"){searchFilter=el.dataset.filter;return render();}
+  if(a==="profileFriendsAll"){profileFriendsAll=true;return render();}
   if(a==="clearSearches"){state.searches=[];save();render();return;}
   if(a==="useSearch"){$("globalSearch").value=el.dataset.q;routeTo("search");return;}
   if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
@@ -2145,6 +2154,34 @@ function forgot(){
   };
 }
 
+function savedAccounts(){
+  try{return JSON.parse(localStorage.getItem("tafass_saved_accounts")||"[]");}catch(_){return [];}
+}
+function saveLoginAccount(profile){
+  if(!profile?.email)return;
+  const list=savedAccounts().filter(a=>a.email.toLowerCase()!==String(profile.email).toLowerCase());
+  list.unshift({email:profile.email,name:displayName(profile),avatar:profile.avatar||profile.avatar_url||""});
+  localStorage.setItem("tafass_saved_accounts",JSON.stringify(list.slice(0,8)));
+}
+function removeSavedAccount(email){
+  const list=savedAccounts().filter(a=>a.email.toLowerCase()!==String(email).toLowerCase());
+  localStorage.setItem("tafass_saved_accounts",JSON.stringify(list));
+  renderSavedAccounts();
+}
+function renderSavedAccounts(){
+  const box=$("savedAccounts");if(!box)return;
+  const list=savedAccounts();
+  if(!list.length){box.innerHTML="";box.classList.remove("has-items");return;}
+  box.classList.add("has-items");
+  box.innerHTML=`<div class="saved-accounts-title">Comptes enregistrés sur cet appareil</div><div class="saved-accounts-list">${list.map(a=>`<div class="saved-account-row"><button type="button" class="saved-account-select" data-saved-email="${esc(a.email)}"><span class="saved-account-avatar">${a.avatar?`<img src="${esc(a.avatar)}" alt="">`:esc((a.name||a.email)[0].toUpperCase())}</span><span><b>${esc(a.name||a.email)}</b><small>${esc(a.email)}</small></span></button><button type="button" class="saved-account-delete" data-saved-delete="${esc(a.email)}" aria-label="Supprimer ce compte enregistré">×</button></div>`).join("")}</div>`;
+  box.querySelectorAll("[data-saved-email]").forEach(btn=>btn.onclick=()=>{
+    const input=$("loginIdentifier");if(input)input.value=btn.dataset.savedEmail;
+    const pass=$("loginPassword");if(pass){pass.value="";pass.focus();}
+    toast("Entrez le mot de passe pour vous reconnecter.");
+  });
+  box.querySelectorAll("[data-saved-delete]").forEach(btn=>btn.onclick=()=>removeSavedAccount(btn.dataset.savedDelete));
+}
+
 function initAuth(){
   countryData.forEach(([name,code])=>$("rCountry").insertAdjacentHTML("beforeend",`<option value="${esc(code)}" data-name="${esc(name)}">${esc(name)} (${esc(code)})</option>`));
   $("rCountry").value="+261";$("rCode").value="+261";
@@ -2169,6 +2206,7 @@ function initAuth(){
     if(registerView) registerView.classList.add("hidden");
     if(loginView) loginView.classList.remove("hidden");
   };
+  renderSavedAccounts();
   const showRegisterBtn=$("showRegister");
   const showLoginBtn=$("showLogin");
   if(showRegisterBtn) showRegisterBtn.addEventListener("click",e=>{e.preventDefault();showRegisterView();});
@@ -2189,6 +2227,8 @@ function initAuth(){
     if(error) return toast("Identifiants incorrects.");
     if(!data.session) return toast("Connexion non disponible. Vérifiez votre e-mail.");
     await hydrateSupabaseSession();
+    saveLoginAccount(me()||{email});
+    renderSavedAccounts();
     render();
   };
   $("forgotBtn").onclick=forgot;
@@ -2323,6 +2363,8 @@ async function createAccount(){
       }catch(sessionError){
         console.warn("Session après inscription:",sessionError);
       }
+      saveLoginAccount(me()||{email,name:$('rFirst').value.trim()+" "+$('rLast').value.trim(),avatar:registerAvatar});
+      renderSavedAccounts();
       render();
       toast("Compte créé avec succès !");
     }else{
