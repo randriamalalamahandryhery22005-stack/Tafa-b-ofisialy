@@ -92,13 +92,26 @@ async function loadSupabaseMessages(){
 }
 async function persistConversation(c){
   if(!supabaseReady()||!c?.id||!c.members?.length) throw new Error('Conversation invalide.');
-  const {error}=await SB.from('conversations').upsert({id:c.id,type:c.type||'private',members:c.members},{onConflict:'id'});
+  // V18.5: write through a SECURITY DEFINER RPC so legacy RLS policies
+  // cannot block a valid private conversation.
+  const {error}=await SB.rpc('tafa_upsert_conversation',{
+    p_id:c.id,
+    p_type:c.type||'private',
+    p_name:c.name||'',
+    p_members:c.members
+  });
   if(error) throw error;
   return c;
 }
 async function persistMessage(m){
   if(!supabaseReady()||!m?.id) throw new Error('Message invalide.');
-  const {error}=await SB.from('messages').insert({id:m.id,conversation_id:m.conversationId,sender_id:m.from,recipient_id:m.to,text:m.text||'',is_read:false});
+  // V18.5: message insert is handled by a SECURITY DEFINER RPC.
+  const {error}=await SB.rpc('tafa_send_message',{
+    p_id:m.id,
+    p_conversation_id:m.conversationId,
+    p_recipient_id:m.to,
+    p_text:m.text||''
+  });
   if(error) throw error;
   return m;
 }
@@ -1554,10 +1567,6 @@ function bindPageEvents(){
     try{
       const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,content:text});
       if(error)throw error;
-      const post=state.posts.find(p=>p.id===postId);
-      if(post?.ownerId && post.ownerId!==state.current){
-        await notify(post.ownerId,"comment",`${displayName(me())} a commenté votre publication.`,postId);
-      }
       await loadSupabasePosts();save();render();toast("Commentaire publié ✓");
     }catch(err){console.error(err);toast("Commentaire impossible : "+(err.message||"erreur Supabase"));}
   });
@@ -1817,9 +1826,7 @@ async function reactPost(id,type){
     const next=old===type?null:type;
     const {data,error}=await SB.rpc("tafa_set_post_reaction",{p_post_id:id,p_reaction:next});
     if(error)throw error;
-    if(next && p.ownerId && p.ownerId!==state.current){
-      await notify(p.ownerId,"reaction",`${displayName(me())} a réagi à votre publication.`,id);
-    }
+    // Notification de réaction: générée côté SQL pour garantir la livraison.
     await loadSupabasePosts();save();render();
   }catch(err){
     console.error("reactPost:",err);
@@ -1833,9 +1840,7 @@ async function sharePost(id){
   try{
     const {error}=await SB.rpc("tafa_increment_post_share",{p_post_id:id});
     if(error)throw error;
-    if(p.ownerId && p.ownerId!==state.current){
-      await notify(p.ownerId,"share",`${displayName(me())} a partagé votre publication.`,id);
-    }
+    // Notification de partage: générée côté SQL avec l'incrément du compteur.
     await loadSupabasePosts();
     save(); render();
     toast("Publication partagée ✓");
