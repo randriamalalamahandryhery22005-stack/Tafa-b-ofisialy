@@ -1,11 +1,10 @@
-TAFAß V16 — REELS + PROFIL COMPLET
+TAFAß V16.1 — REELS + PROFIL
 
-1. Tous les anciens posts avec media_type='video' sont convertis en media_type='reel' via REELS_PROFILE_COMPLETE_V16.sql.
-2. Tout nouveau fichier vidéo publié est enregistré comme Reel.
-3. Le profil affiche Publications, Photos, Reels, Amis et À propos.
-4. L'édition du profil contient maintenant les informations déjà prévues par la base : prénom, nom, date de naissance, genre, username, pays, code téléphone, téléphone, e-mail, pseudo, bio, localisation, situation amoureuse, photo de profil et couverture.
-5. Les informations sont enregistrées dans public.profiles via Supabase.
-6. La logique Auth, Storage, réactions, commentaires, partages et Supabase existante est conservée.
-7. Aucune modification du mécanisme Realtime n'est introduite par cette version.
+SQL:
+Utilisez uniquement REELS_PROFILE_COMPLETE_V16.sql dans Supabase SQL Editor.
 
-IMPORTANT : exécuter une seule fois REELS_PROFILE_COMPLETE_V16.sql dans Supabase SQL Editor pour convertir les anciennes vidéos déjà en base.
+Le fichier SQL commence uniquement par des commentaires SQL (--).
+Ne copiez pas le nom du fichier, le titre du ZIP ou le texte du README dans Supabase.
+
+La migration convertit les publications dont media_type = 'video' en media_type = 'reel'.
+Elle ne modifie pas Auth, Supabase Realtime, Storage, RLS ou la logique frontend.
