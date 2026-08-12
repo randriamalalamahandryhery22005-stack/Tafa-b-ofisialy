@@ -18,6 +18,75 @@
 ============================================================ */
 const SB = window.supabaseClient;
 
+/* ============================================================
+   TAFAß V18 — REALTIME CORE
+   Supabase Realtime is the source of truth for social data.
+   UI/layout intentionally unchanged.
+============================================================ */
+let tafaRealtimeChannels=[];
+let realtimeBusy=false;
+function stopTafaRealtime(){
+  if(!supabaseReady()) return;
+  tafaRealtimeChannels.forEach(ch=>{try{SB.removeChannel(ch)}catch(e){}});
+  tafaRealtimeChannels=[];
+}
+async function loadSupabaseNotifications(){
+  if(!supabaseReady()||!state.current) return;
+  const {data,error}=await SB.from('notifications').select('*').eq('recipient_id',state.current).order('created_at',{ascending:false}).limit(200);
+  if(error){console.warn('Realtime notifications:',error.message);return;}
+  state.notifications=(data||[]).map(n=>({id:n.id,userId:n.recipient_id,type:n.type,text:n.message||n.title||'',entityId:n.entity_id,read:!!n.is_read,createdAt:n.created_at}));
+  save();
+}
+async function refreshRealtimePosts(){ if(realtimeBusy) return; realtimeBusy=true; try{await loadSupabasePosts();save();render();}finally{realtimeBusy=false;} }
+async function refreshRealtimeFriends(){ try{await loadSupabaseFriends();save();render();}catch(e){console.warn(e)} }
+async function startTafaRealtime(){
+  if(!supabaseReady()||!state.current) return;
+  stopTafaRealtime();
+  await loadSupabaseNotifications();
+  const specs=[
+    ['profiles','profile-change',()=>{loadSupabaseProfiles().then(render)}],
+    ['posts','post-change',()=>refreshRealtimePosts()],
+    ['post_reactions','reaction-change',()=>refreshRealtimePosts()],
+    ['comments','comment-change',()=>refreshRealtimePosts()],
+    ['friend_requests','friend-request-change',()=>refreshRealtimeFriends()],
+    ['friendships','friendship-change',()=>refreshRealtimeFriends()],
+    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render)],
+    ['messages','message-change',()=>loadSupabaseMessages().then(render)],
+    ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)]
+  ];
+  specs.forEach(([table,name,refresh])=>{
+    let ch=SB.channel('tafa-v18-'+name)
+      .on('postgres_changes',{event:'*',schema:'public',table},payload=>{ console.debug('[TAFAß REALTIME]',table,payload.eventType); refresh(); });
+    ch.subscribe(status=>{if(status==='CHANNEL_ERROR')console.warn('Realtime channel error:',table);});
+    tafaRealtimeChannels.push(ch);
+  });
+}
+async function loadSupabaseMessages(){
+  if(!supabaseReady()||!state.current) return;
+  try{
+    const {data:cs,error:ce}=await SB.from('conversations').select('*').contains('members',[state.current]).order('created_at',{ascending:false});
+    if(ce) throw ce;
+    const convs=(cs||[]).map(c=>({id:c.id,type:c.type||'private',members:c.members||[],name:c.name||'',createdAt:c.created_at}));
+    const ids=convs.map(c=>c.id);
+    state.conversations=convs;
+    if(ids.length){
+      const {data:ms,error:me}=await SB.from('messages').select('*').in('conversation_id',ids).order('created_at',{ascending:true}).limit(1000);
+      if(me) throw me;
+      state.messages=(ms||[]).map(m=>({id:m.id,conversationId:m.conversation_id,from:m.sender_id,to:m.recipient_id,text:m.text||'',files:[],file:null,read:!!m.is_read,createdAt:m.created_at}));
+    }else state.messages=[];
+    save();
+  }catch(e){console.warn('Supabase messages:',e.message||e)}
+}
+async function persistConversation(c){
+  if(!supabaseReady()||!c?.id||!c.members?.length) return;
+  try{await SB.from('conversations').upsert({id:c.id,type:c.type||'private',members:c.members,name:c.name||''},{onConflict:'id'});}catch(e){console.warn('Conversation persist:',e.message||e)}
+}
+async function persistMessage(m){
+  if(!supabaseReady()||!m?.id) return;
+  try{await SB.from('messages').insert({id:m.id,conversation_id:m.conversationId,sender_id:m.from,recipient_id:m.to,text:m.text||'',is_read:false});}catch(e){console.warn('Message persist:',e.message||e)}
+}
+
+
 function supabaseReady(){
   return !!(SB && SB.auth);
 }
@@ -682,7 +751,11 @@ function modal(title,body,buttons=""){
 function closeModal(){ $("modalRoot").innerHTML=""; }
 function notify(userId,type,text,entityId=null){
   if(!userId)return;
-  state.notifications.unshift({id:uid("n"),userId,type,text,entityId,read:false,createdAt:new Date().toISOString()});save();
+  const n={id:crypto.randomUUID(),userId,type,text,entityId,read:false,createdAt:new Date().toISOString()};
+  state.notifications.unshift(n); save();
+  if(supabaseReady() && state.current){
+    SB.from('notifications').insert({id:n.id,recipient_id:userId,actor_id:state.current,type,title:'Tafaß',message:text,entity_type:'',entity_id:entityId,is_read:false}).then(({error})=>{if(error)console.warn('Notification persist:',error.message)});
+  }
 }
 function routeTo(r, options={}){
   const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
@@ -1763,7 +1836,7 @@ function toggleFollow(id){if(id===state.current)return;const i=state.follows.fin
 function togglePageFollow(id){const p=findPage(id);if(!p)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0){state.follows.splice(i,1);p.followers=Math.max(0,(p.followers||0)-1);}else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});p.followers=(p.followers||0)+1;notify(p.ownerId,"follow",`${displayName(me())} suit votre Page.`);}save();render();}
 function startConversation(id){
   let c=state.conversations.find(c=>c.type==="private"&&c.members.includes(state.current)&&c.members.includes(id));
-  if(!c){c={id:uid("conv"),type:"private",members:[state.current,id],name:""};state.conversations.push(c);save();}
+  if(!c){c={id:crypto.randomUUID(),type:"private",members:[state.current,id],name:"",createdAt:new Date().toISOString()};state.conversations.push(c);save();persistConversation(c);}
   activeConversation=c.id;routeTo("messages");
 }
 function newConversation(){
@@ -1777,9 +1850,10 @@ function sendMessage(convId,text,fileOrFiles){
   let files=[];
   if(Array.isArray(fileOrFiles)) files=fileOrFiles.filter(Boolean).map(f=>Object.assign({id:uid("mf")},f));
   else if(fileOrFiles) files=[Object.assign({id:uid("mf")},fileOrFiles)];
-  state.messages.push({id:uid("m"),conversationId:convId,from:state.current,to,text,files,file:files[0]||null,read:false,createdAt:new Date().toISOString()});
+  const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text,files,file:files[0]||null,read:false,createdAt:new Date().toISOString()};
+  state.messages.push(m); save(); persistConversation(c); persistMessage(m);
   if(to)notify(to,"message",`${displayName(me())} vous a envoyé un message.`);
-  save();
+  render();
 }
 function voiceCall(id){modal("Appel vocal",`<div class="empty"><div class="empty-icon">☎</div><b>Appel simulé</b><p>L'interface est prête. Pour un appel réel, branchez WebRTC + signalisation backend.</p><button class="btn primary" data-action="closeModal">Terminer</button></div>`);}
 function createMarketplace(){
@@ -2213,6 +2287,7 @@ async function createAccount(){
     dots.forEach((dot,i)=>setTimeout(()=>{dot.classList.add("active");setTimeout(()=>{dot.classList.remove("active");dot.classList.add("done");},260);},i*500));
   }
   await hydrateSupabaseSession();
+  if(state.current){ try{ await loadSupabaseMessages(); }catch(e){} try{ await startTafaRealtime(); }catch(e){console.warn('Realtime init:',e)} }
   const leave=()=>{
     if(splash){splash.classList.add("hide");setTimeout(()=>splash.remove(),550);}
     if(!state.current){$("authScreen").classList.remove("hidden");$("appScreen").classList.add("hidden")}
