@@ -1951,9 +1951,33 @@ function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de
 function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=e=>{e.preventDefault();p.name=$("epName").value;p.description=$("epDesc").value;p.category=$("epCat").value;save();closeModal();render();};}
 function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=e=>{e.preventDefault();state.groups.push({id:uid("g"),name:$("gName").value,privacy:$("gPrivacy").value,description:$("gDesc").value,members:[state.current],ownerId:state.current});save();closeModal();render();};}
 function joinGroup(id){const g=state.groups.find(x=>x.id===id);if(g&&!g.members.includes(state.current)){g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe");}}
-function changePassword(){
-  modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Le nouveau mot de passe est enregistré localement dans ce prototype. Pour une version réelle, utilisez un service d'authentification sécurisé.</div><label>Mot de passe actuel<input id="oldPass" type="password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
-  $("passwordChangeForm").onsubmit=e=>{e.preventDefault();const u=me(),a=$("oldPass").value,b=$("newPass").value,c=$("newPass2").value;if(a!==u.pass)return toast("Mot de passe actuel incorrect.");if(b.length<6)return toast("Le nouveau mot de passe doit contenir au moins 6 caractères.");if(b!==c)return toast("Les mots de passe ne correspondent pas.");u.pass=b;save();closeModal();toast("Mot de passe modifié");};
+async function changePassword(){
+  modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Votre mot de passe est géré directement par Supabase Auth. Il n'est jamais enregistré dans le navigateur.</div><label>Mot de passe actuel<input id="oldPass" type="password" autocomplete="current-password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" autocomplete="new-password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
+  $("passwordChangeForm").onsubmit=async e=>{
+    e.preventDefault();
+    const btn=e.currentTarget.querySelector('button[type="submit"]');
+    const b=$("newPass").value,c=$("newPass2").value;
+    if(b.length<6)return toast("Le nouveau mot de passe doit contenir au moins 6 caractères.");
+    if(b!==c)return toast("Les mots de passe ne correspondent pas.");
+    if(!supabaseReady())return toast("Supabase n'est pas configuré.");
+    try{
+      if(btn){btn.disabled=true;btn.textContent="Vérification...";}
+      const {data:{user},error:userError}=await SB.auth.getUser();
+      if(userError||!user?.email)throw userError||new Error("Session Supabase introuvable.");
+      const {error:verifyError}=await SB.auth.signInWithPassword({email:user.email,password:$("oldPass").value});
+      if(verifyError)return toast("Mot de passe actuel incorrect.");
+      if(btn)btn.textContent="Enregistrement...";
+      const {error:updateError}=await SB.auth.updateUser({password:b});
+      if(updateError)throw updateError;
+      closeModal();
+      toast("Mot de passe modifié avec succès.");
+    }catch(err){
+      console.error("Changement mot de passe Supabase:",err);
+      toast(err?.message||"Impossible de modifier le mot de passe.");
+    }finally{
+      if(btn){btn.disabled=false;btn.textContent="Enregistrer le nouveau mot de passe";}
+    }
+  };
 }
 
 async function uploadProfileImage(file, kind){
@@ -2064,6 +2088,17 @@ function editProfile(){
       const af=$("eAvatar").files[0], cf=$("eCover").files[0];
       if(af) u.avatar=await uploadProfileImage(af,"avatar");
       if(cf) u.cover=await uploadProfileImage(cf,"cover");
+
+      // Keep Supabase Auth email and the public profile synchronized.
+      const {data:{user:authUser},error:authUserError}=await SB.auth.getUser();
+      if(authUserError||!authUser?.id) throw authUserError||new Error("Session Supabase introuvable.");
+      const currentAuthEmail=(authUser.email||"").trim().toLowerCase();
+      const nextAuthEmail=(u.email||"").trim().toLowerCase();
+      if(nextAuthEmail && nextAuthEmail!==currentAuthEmail){
+        const {error:emailError}=await SB.auth.updateUser({email:nextAuthEmail});
+        if(emailError) throw emailError;
+        toast("Un e-mail de confirmation peut être demandé pour le nouvel e-mail.");
+      }
       await saveCurrentProfileToSupabase(u);
       closeModal(); render(); toast("Profil enregistré sur Supabase.");
     }catch(err){
