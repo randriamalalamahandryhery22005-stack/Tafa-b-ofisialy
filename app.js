@@ -119,6 +119,10 @@ async function startTafaRealtime(){
     ['friend_requests','friend-request-change',()=>refreshRealtimeFriends()],
     ['friendships','friendship-change',()=>refreshRealtimeFriends()],
     ['notifications','notification-change',()=>loadSupabaseNotifications().then(render),`user_id=eq.${uid}`],
+    ['stories','story-change',()=>loadSupabaseStories().then(render)],
+    ['story_views','story-view-change',()=>loadSupabaseStories().then(render)],
+    ['story_reactions','story-reaction-change',()=>loadSupabaseStories().then(render)],
+    ['story_replies','story-reply-change',()=>loadSupabaseStories().then(render)],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)]
   ];
@@ -503,10 +507,102 @@ async function hydrateSupabaseSession(){
   await loadSupabaseProfiles();
   await loadSupabasePosts();
   await loadSupabaseFriends();
+  await loadSupabaseStories();
   save();
   return true;
 }
 
+
+
+async function loadSupabaseStories(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const {data,error}=await SB.from('stories').select('*').gt('expires_at',new Date().toISOString()).order('created_at',{ascending:false}).limit(200);
+    if(error) throw error;
+    const rows=data||[];
+    const ownerIds=[...new Set(rows.map(r=>r.user_id).filter(Boolean))];
+    if(ownerIds.length){
+      const {data:profiles}=await SB.from('profiles').select('*').in('id',ownerIds);
+      mergeUsersFromProfiles(profiles||[]);
+    }
+    const ids=rows.map(r=>r.id);
+    let views=[], reactions=[], replies=[];
+    if(ids.length){
+      const [v,r,rep]=await Promise.all([
+        SB.from('story_views').select('story_id,user_id,created_at').in('story_id',ids),
+        SB.from('story_reactions').select('story_id,user_id,reaction_type').in('story_id',ids),
+        SB.from('story_replies').select('id,story_id,user_id,text,created_at').in('story_id',ids).order('created_at',{ascending:true})
+      ]);
+      if(!v.error) views=v.data||[]; else console.warn('Stories views:',v.error.message);
+      if(!r.error) reactions=r.data||[]; else console.warn('Stories reactions:',r.error.message);
+      if(!rep.error) replies=rep.data||[]; else console.warn('Stories replies:',rep.error.message);
+    }
+    state.stories=rows.map(r=>({
+      id:r.id,ownerId:r.user_id,ownerType:'user',text:r.text||'',media:r.media_url||'',mediaType:r.media_type||'text',
+      visibility:r.visibility==='friends'?'Amis':'Public',createdAt:r.created_at,expiresAt:r.expires_at,
+      views:views.filter(v=>v.story_id===r.id).map(v=>v.user_id),
+      reactions:Object.fromEntries(reactions.filter(x=>x.story_id===r.id).map(x=>[x.user_id,x.reaction_type||'❤️'])),
+      replies:replies.filter(x=>x.story_id===r.id).map(x=>({id:x.id,userId:x.user_id,text:x.text||'',createdAt:x.created_at}))
+    }));
+    save();
+  }catch(err){ console.error('Supabase stories:',err); }
+}
+async function uploadStoryMedia(file){
+  if(!file) return {url:'',path:'',type:'text'};
+  const type=String(file.type||'').toLowerCase();
+  if(!type.startsWith('image/')&&!type.startsWith('video/')) throw new Error('Format Story non pris en charge.');
+  const max=type.startsWith('image/')?15*1024*1024:100*1024*1024;
+  if(file.size>max) throw new Error(`Fichier trop volumineux. Maximum ${type.startsWith('image/')?'15':'100'} Mo.`);
+  const ext=(file.name.split('.').pop()||'bin').replace(/[^a-z0-9]/gi,'').toLowerCase()||'bin';
+  const path=`${state.current}/${crypto.randomUUID()}.${ext}`;
+  const {error}=await SB.storage.from('stories').upload(path,file,{contentType:file.type||undefined,upsert:false});
+  if(error) throw error;
+  const {data}=SB.storage.from('stories').getPublicUrl(path);
+  return {url:data?.publicUrl||'',path,type:type.startsWith('video/')?'video':'image'};
+}
+async function createSupabaseStory({text='',file=null,visibility='Public'}){
+  if(!supabaseReady()||!state.current) throw new Error('Connexion requise.');
+  let uploaded=null;
+  try{
+    uploaded=await uploadStoryMedia(file);
+    const now=new Date();
+    const expires=new Date(now.getTime()+24*3600e3);
+    const {data,error}=await SB.from('stories').insert({
+      user_id:state.current,text:text||'',media_url:uploaded.url||null,media_type:uploaded.type||'text',
+      visibility:visibility==='Amis'?'friends':'public',created_at:now.toISOString(),expires_at:expires.toISOString()
+    }).select('*').single();
+    if(error) throw error;
+    await loadSupabaseStories();
+    return data;
+  }catch(err){
+    if(uploaded?.path) try{await SB.storage.from('stories').remove([uploaded.path]);}catch(_e){}
+    throw err;
+  }
+}
+async function markStoryViewed(storyId){
+  if(!supabaseReady()||!state.current||!storyId) return;
+  const {error}=await SB.from('story_views').upsert({story_id:storyId,user_id:state.current},{onConflict:'story_id,user_id'});
+  if(error) console.warn('Story view:',error.message);
+}
+async function reactStorySupabase(storyId,reaction='❤️'){
+  if(!supabaseReady()||!state.current) return;
+  const {error}=await SB.from('story_reactions').upsert({story_id:storyId,user_id:state.current,reaction_type:reaction},{onConflict:'story_id,user_id'});
+  if(error) throw error;
+}
+async function replyStorySupabase(storyId,text){
+  if(!supabaseReady()||!state.current) throw new Error('Connexion requise.');
+  const {data,error}=await SB.from('story_replies').insert({story_id:storyId,user_id:state.current,text}).select('*').single();
+  if(error) throw error;
+  return data;
+}
+async function deleteStorySupabase(story){
+  if(!supabaseReady()||!story?.id) throw new Error('Story invalide.');
+  const {data:{user}}=await SB.auth.getUser();
+  if(!user||user.id!==story.ownerId) throw new Error('Vous ne pouvez supprimer que votre Story.');
+  const {error}=await SB.from('stories').delete().eq('id',story.id).eq('user_id',user.id);
+  if(error) throw error;
+  await loadSupabaseStories();
+}
 
 async function loadSupabasePosts(){
   if(!supabaseReady() || !state.current) return;
@@ -1852,7 +1948,8 @@ async function handleAction(e,el){
   if(a==="createStory")return openStory();
   if(a==="viewStory")return viewStory(id);
   if(a==="downloadStory"){const st=state.stories.find(x=>x.id===id);if(st)return downloadData(st.media,`Tafaß-story-${id}`);return;}
-  if(a==="storyReact"){const st=state.stories.find(x=>x.id===id);if(st){st.reactions=st.reactions||{};st.reactions[state.current]=true;if(st.ownerId!==state.current)notify(st.ownerId,"reaction",`${displayName(me())} a réagi à votre Story.`);save();toast("Réaction envoyée");}return;}
+  if(a==="storyReact"){const st=state.stories.find(x=>x.id===id);if(!st)return;try{if(supabaseReady())await reactStorySupabase(id,"❤️");else{st.reactions=st.reactions||{};st.reactions[state.current]="❤️";save();}if(st.ownerId!==state.current)await notify(st.ownerId,"story_reaction",`${displayName(me())} a réagi à votre Story.`);await loadSupabaseStories();closeModal();toast("Réaction envoyée ✓");}catch(err){console.error(err);toast("Réaction impossible : "+(err.message||"erreur Supabase"));}return;}
+  if(a==="deleteStory"){const st=state.stories.find(x=>x.id===id);if(!st)return;try{if(supabaseReady())await deleteStorySupabase(st);else{state.stories=state.stories.filter(x=>x.id!==id);save();}closeModal();render();toast("Story supprimée ✓");}catch(err){console.error(err);toast("Suppression impossible : "+(err.message||"erreur Supabase"));}return;}
   if(a==="downloadMedia"){const p=state.posts.find(x=>x.id===id);if(p)return downloadData(p.media,`Tafaß-${p.id}`);return;}
   if(a==="viewMedia"){const p=state.posts.find(x=>x.id===id);if(p)return openMediaViewer(p);return;}
   if(a==="downloadMarketMedia"){const x=(state.marketplace||[]).find(x=>x.id===id);if(x)return downloadData(x.image,`Tafaß-${x.title||"annonce"}`);return;}
@@ -2253,8 +2350,63 @@ function reactionMenu(id){
   render();
 }
 function fileToData(file){if(!file)return Promise.resolve("");return new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>res("");r.readAsDataURL(file);});}
-function openStory(){modal("Créer une Story",`<form id="storyForm" class="premium-form"><label>Texte<textarea id="storyText" placeholder="Votre Story..."></textarea></label><label>Photo / vidéo<input id="storyFile" type="file" accept="image/*,video/*"></label><button class="btn primary wide">Publier</button></form>`);$("storyForm").onsubmit=e=>{e.preventDefault();const f=$("storyFile").files[0];fileToData(f).then(media=>{state.stories.unshift({id:uid("story"),ownerId:state.current,ownerType:"user",text:$("storyText").value.trim(),media,views:[],reactions:{},replies:[],createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+24*3600e3).toISOString()});save();closeModal();render();});};}
-function viewStory(id){const s=state.stories.find(x=>x.id===id),owner=s?.ownerType==="page"?findPage(s.ownerId):findUser(s.ownerId);if(!s||!owner)return;if(s.ownerId!==state.current){s.views=s.views||[];if(!s.views.includes(state.current))s.views.push(state.current);}save();const viewers=(s.views||[]).map(x=>findUser(x)).filter(Boolean);modal(displayName(owner),`<div class="story-viewer">${s.media?`<div class="media-click">${s.media.match(/^data:video/)?`<video src="${esc(s.media)}" controls autoplay></video>`:`<img src="${esc(s.media)}">`}<button class="btn secondary wide" data-action="downloadStory" data-id="${id}">⇩ Enregistrer</button></div>`:""}<p>${esc(s.text||"")}</p><div class="story-actions"><button data-action="storyReact" data-id="${id}">❤️ Réagir</button></div>${s.ownerId===state.current?`<div class="story-viewers"><b>${viewers.length} vues</b>${viewers.map(v=>`<span>${avatar(v,"avatar xs")} ${esc(displayName(v))}</span>`).join("")||"<small>Aucune vue</small>"}</div>`:""}<form id="storyReplyForm"><input id="storyReplyText" placeholder="Répondre à cette Story..."><button class="btn primary">Envoyer</button></form></div>`);$("storyReplyForm").onsubmit=e=>{e.preventDefault();const text=$("storyReplyText").value.trim();if(!text)return;s.replies=s.replies||[];s.replies.push({userId:state.current,text,createdAt:new Date().toISOString()});notify(s.ownerId,"message",`${displayName(me())} a répondu à votre Story.`);save();closeModal();toast("Réponse envoyée");};}
+async function openStory(){
+  modal("Créer une Story",`<form id="storyForm" class="premium-form">
+    <label>Texte<textarea id="storyText" placeholder="Votre Story..."></textarea></label>
+    <label>Visibilité<select id="storyVisibility"><option>Public</option><option>Amis</option></select></label>
+    <label>Photo / vidéo<input id="storyFile" type="file" accept="image/*,video/*"></label>
+    <small class="field-help">Image · 15 Mo max · Vidéo · 100 Mo max · durée 24 h</small>
+    <button id="storySubmit" class="btn primary wide">Publier</button>
+  </form>`);
+  $("storyForm").onsubmit=async e=>{
+    e.preventDefault();
+    const text=$("storyText")?.value.trim()||"", file=$("storyFile")?.files?.[0]||null, visibility=$("storyVisibility")?.value||"Public";
+    if(!text&&!file){toast("Ajoutez un texte ou un fichier.");return;}
+    const btn=$("storySubmit"); if(btn){btn.disabled=true;btn.textContent="Publication…";}
+    try{
+      if(supabaseReady()){
+        await createSupabaseStory({text,file,visibility});
+      }else{
+        const media=await fileToData(file);
+        state.stories.unshift({id:uid("story"),ownerId:state.current,ownerType:"user",text,media,views:[],reactions:{},replies:[],visibility,createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+24*3600e3).toISOString()});
+        save();
+      }
+      closeModal(); render(); toast("Story publiée ✓");
+    }catch(err){console.error(err);toast("Story impossible : "+(err.message||"erreur Supabase"));}
+    finally{if(btn){btn.disabled=false;btn.textContent="Publier";}}
+  };
+}
+async function viewStory(id){
+  let s=state.stories.find(x=>x.id===id);
+  if(!s) return;
+  if(supabaseReady()){
+    try{ await loadSupabaseStories(); s=state.stories.find(x=>x.id===id)||s; }catch(_e){}
+  }
+  const owner=s?.ownerType==="page"?findPage(s.ownerId):findUser(s.ownerId);
+  if(!s||!owner)return;
+  if(s.ownerId!==state.current){
+    s.views=s.views||[]; if(!s.views.includes(state.current))s.views.push(state.current);
+    if(supabaseReady()) await markStoryViewed(id); else save();
+  }
+  const viewers=(s.views||[]).map(x=>findUser(x)).filter(Boolean);
+  const reactions=Object.keys(s.reactions||{}).length;
+  modal(displayName(owner),`<div class="story-viewer">
+    ${s.media?`<div class="media-click">${String(s.media).match(/\.(mp4|webm|mov|m4v)(\?|$)/i)?`<video src="${esc(s.media)}" controls autoplay playsinline></video>`:`<img src="${esc(s.media)}" alt="Story de ${esc(displayName(owner))}">`}<button class="btn secondary wide" data-action="downloadStory" data-id="${id}">⇩ Enregistrer</button></div>`:""}
+    <p>${esc(s.text||"")}</p>
+    <div class="story-actions"><button data-action="storyReact" data-id="${id}">❤️ Réagir${reactions?` · ${reactions}`:""}</button>${s.ownerId===state.current?`<button class="btn secondary" data-action="deleteStory" data-id="${id}">Supprimer</button>`:""}</div>
+    ${s.ownerId===state.current?`<div class="story-viewers"><b>${viewers.length} vues</b>${viewers.map(v=>`<span>${avatar(v,"avatar xs")} ${esc(displayName(v))}</span>`).join("")||"<small>Aucune vue</small>"}</div>`:""}
+    <form id="storyReplyForm"><input id="storyReplyText" placeholder="Répondre à cette Story..." required><button class="btn primary">Envoyer</button></form>
+  </div>`);
+  $("storyReplyForm").onsubmit=async e=>{
+    e.preventDefault(); const text=$("storyReplyText")?.value.trim(); if(!text)return;
+    try{
+      if(supabaseReady()) await replyStorySupabase(id,text);
+      else {s.replies=s.replies||[];s.replies.push({userId:state.current,text,createdAt:new Date().toISOString()});save();}
+      if(s.ownerId!==state.current) await notify(s.ownerId,"story_reply",`${displayName(me())} a répondu à votre Story.`,null,null);
+      closeModal(); toast("Réponse envoyée ✓");
+    }catch(err){console.error(err);toast("Réponse impossible : "+(err.message||"erreur Supabase"));}
+  };
+}
 function toggleFollow(id){if(id===state.current)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0)state.follows.splice(i,1);else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});notify(id,"follow",`${displayName(me())} vous suit maintenant.`);}save();render();}
 function togglePageFollow(id){const p=findPage(id);if(!p)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0){state.follows.splice(i,1);p.followers=Math.max(0,(p.followers||0)-1);}else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});p.followers=(p.followers||0)+1;notify(p.ownerId,"follow",`${displayName(me())} suit votre Page.`);}save();render();}
 function startConversation(id){
