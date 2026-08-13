@@ -3768,3 +3768,76 @@ body.dark .top-actions .menu-action{
   .nav-glyph,.nav-glyph svg{width:22px!important;height:22px!important}
   .post-premium .post-reel-media{width:min(100%,360px)!important}
 }
+
+
+/* =========================================================
+   V1.1.6.10.5 — HEADER / MEDIA FINAL POLISH
+   - 7 primary destinations including Reels
+   - Messages + Search + Menu remain visible together
+   - Natural image sizing
+   - Video 16:9 / Reel 9:16, always fully visible
+   - Clean composer / no oversized media containers
+========================================================= */
+.top-actions{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:6px!important}
+.top-actions .messages-action,.top-actions .search-action,.top-actions .menu-action{
+  position:relative!important;display:grid!important;place-items:center!important;
+  width:42px!important;height:42px!important;min-width:42px!important;
+  padding:0!important;border-radius:13px!important;font-size:22px!important;line-height:1!important;
+  border:1px solid rgba(120,130,150,.16)!important;background:var(--lux-card,#fff)!important;color:var(--lux-text,#202733)!important;
+  box-shadow:0 5px 16px rgba(20,28,45,.06)!important;
+}
+.top-actions .messages-action:hover,.top-actions .search-action:hover,.top-actions .menu-action:hover{transform:translateY(-1px);border-color:rgba(24,119,242,.28)!important;color:var(--blue)!important}
+.top-message-icon{font-size:27px!important;font-weight:900!important;line-height:1!important;transform:rotate(-18deg);display:block}
+.top-actions .messages-action .badge-count{top:-5px!important;right:-5px!important}
+.top-menu-nav{grid-template-columns:repeat(7,minmax(0,1fr))!important;overflow-x:auto!important;overflow-y:hidden!important;scrollbar-width:none!important}
+.top-menu-nav::-webkit-scrollbar{display:none}
+.top-menu-nav .nav-item{min-width:62px!important}
+
+/* Composer: clean, page-width, media is the content itself */
+.news-composer-v90,.composer-modal-v88{max-width:100%!important}
+.news-composer-v90{border:0!important;box-shadow:none!important;background:transparent!important}
+.composer-type-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin:4px 0 10px}
+.composer-type-choice{border:1px solid var(--lux-line);background:var(--lux-card);border-radius:13px;padding:10px 7px;color:var(--lux-text);font-weight:800;cursor:pointer}
+.composer-type-choice.active{border-color:rgba(24,119,242,.35);background:rgba(24,119,242,.08);color:var(--blue)}
+.composer-media-preview{margin-top:8px;width:100%;border:0!important;background:transparent!important;border-radius:0!important;overflow:hidden}
+.composer-media-preview img{display:block;width:100%;height:auto;max-height:520px;object-fit:contain;border-radius:14px;background:#0b0d12}
+.composer-media-preview video{display:block;width:100%;aspect-ratio:16/9;height:auto;max-height:560px;object-fit:contain;border-radius:14px;background:#080a0e}
+
+/* Publication media: no oversized generic box */
+.post-media-wrap{width:100%!important;background:transparent!important;display:block!important;max-height:none!important;overflow:hidden!important}
+.post-media{display:block!important;width:100%!important;height:auto!important;max-width:100%!important;max-height:none!important;object-fit:contain!important;background:#0a0c10}
+.post-image-media{background:transparent!important}
+.post-image-media .post-media{height:auto!important;max-height:720px!important;object-fit:contain!important;border-radius:0!important}
+.post-video-media{aspect-ratio:16/9!important;background:#080a0e!important}
+.post-video-media .post-media{width:100%!important;height:100%!important;max-height:none!important;object-fit:contain!important}
+.post-reel-media{width:min(100%,520px)!important;aspect-ratio:9/16!important;margin:0 auto!important;background:#080a0e!important}
+.post-reel-media .post-media{width:100%!important;height:100%!important;max-height:none!important;object-fit:contain!important}
+.media-hub .post-media-wrap{margin:0!important}
+.media-hub .post{overflow:hidden}
+.media-grid{display:grid;grid-template-columns:minmax(0,1fr)!important;gap:14px}
+.media-grid .post{margin:0!important}
+
+/* Actualités must stay text/photo only */
+.news-post-stack-v90 .post-video-media,.news-post-stack-v90 .post-reel-media{display:none!important}
+
+.post-text{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.post-text-toggle{border:0;background:none;color:var(--blue);font-weight:800;padding:0 0 0 4px;cursor:pointer}
+
+@media(max-width:780px){
+  .topbar{grid-template-columns:82px minmax(0,1fr) 132px!important;min-height:108px!important}
+  .top-actions{gap:5px!important}
+  .top-actions .messages-action,.top-actions .search-action,.top-actions .menu-action{width:38px!important;height:38px!important;min-width:38px!important;border-radius:12px!important;font-size:20px!important}
+  .top-message-icon{font-size:24px!important}
+  .top-menu-nav{grid-template-columns:repeat(7,minmax(56px,1fr))!important;justify-content:start!important;overflow-x:auto!important}
+  .top-menu-nav .nav-item{min-width:56px!important}
+  .composer-type-grid{grid-template-columns:repeat(2,1fr)}
+  .post-image-media .post-media{max-height:520px!important}
+  .post-reel-media{width:min(100%,430px)!important}
+}
+@media(max-width:430px){
+  .topbar{grid-template-columns:72px minmax(0,1fr) 126px!important;padding-left:7px!important;padding-right:7px!important}
+  .brand-wordmark{font-size:22px!important}
+  .top-actions .messages-action,.top-actions .search-action,.top-actions .menu-action{width:36px!important;height:36px!important;min-width:36px!important}
+  .top-menu-nav .nav-item{min-width:53px!important}
+  .post-image-media .post-media{max-height:460px!important}
+}
