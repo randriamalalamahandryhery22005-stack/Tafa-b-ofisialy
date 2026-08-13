@@ -110,6 +110,32 @@ window.tafaPagesGroupesV179 = {
     });
   }
 };
+
+/* V1.1.7.10 — frontend safety guards; database RLS remains authoritative */
+window.tafaSecurityV1710 = {
+  currentId(){
+    return state?.current || window.currentUser?.id || window.currentProfile?.id || null;
+  },
+  isOwner(row, field="user_id"){
+    const me=this.currentId();
+    return !!me && !!row && row[field]===me;
+  },
+  isMember(ids){
+    const me=this.currentId();
+    return !!me && Array.isArray(ids) && ids.includes(me);
+  },
+  safeAction(row, field="user_id"){
+    return this.isOwner(row,field);
+  }
+};
+
+function tafaCanEditV1710(row, field="user_id"){
+  return tafaSecurityV1710.isOwner(row,field);
+}
+function tafaCanDeleteV1710(row, field="user_id"){
+  return tafaSecurityV1710.isOwner(row,field);
+}
+
 function tafaPagesGroupesFilterV179(items, kind="all", q=""){
   const all=tafaPagesGroupesV179.unique(items||[]);
   const filtered=kind==="all" ? all : all.filter(x=>{

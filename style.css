@@ -4016,3 +4016,7 @@ body.dark .top-actions .menu-action{
 .tafa-page-group-card-v179 .description{overflow-wrap:anywhere;word-break:break-word}
 .tafa-page-group-card-v179 .meta{font-size:.82rem;opacity:.68;overflow-wrap:anywhere}
 .tafa-page-group-card-v179 .actions{display:flex;flex-wrap:wrap;gap:6px}
+
+/* V1.1.7.10 — safe action states */
+.tafa-secure-disabled-v1710{pointer-events:none;opacity:.45}
+.tafa-owner-action-v1710{display:inline-flex;align-items:center}
