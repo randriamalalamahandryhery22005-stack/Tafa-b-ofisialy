@@ -8,8 +8,8 @@
 alter table public.comments add column if not exists content text;
 
 update public.comments
-set content = coalesce(nullif(content, ''), nullif(text, ''), nullif(body, ''), '')
-where content is null or content = '';
+set content = coalesce(content, '')
+where content is null;
 
 alter table public.comments alter column content set not null;
 
