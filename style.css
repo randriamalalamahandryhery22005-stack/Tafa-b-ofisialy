@@ -3448,3 +3448,9 @@ body.dark{--tfa-surface:#101722;--tfa-line:#263246;--tfa-text:#f4f7ff;--tfa-mute
 .comment-actions button{border:0;background:transparent;padding:3px 5px;cursor:pointer;font:inherit;color:inherit;opacity:.82}
 .comment-actions button:hover{opacity:1;text-decoration:underline}
 @media(max-width:600px){.comment-replies-v115{margin-left:4px;padding-left:8px}.comment-actions{gap:5px}.comment-actions button{font-size:12px}}
+
+/* V1.1.6 clickable notification source + highlighted comment */
+.notification-clickable{cursor:pointer;transition:transform .16s ease,box-shadow .16s ease}
+.notification-clickable:hover{transform:translateY(-1px)}
+.notification-open-arrow{font-size:22px;display:flex;align-items:center;justify-content:center}
+.notification-comment-target{outline:2px solid rgba(90,120,255,.35);box-shadow:0 8px 30px rgba(20,30,60,.12)}

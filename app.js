@@ -93,7 +93,7 @@ async function loadSupabaseNotifications(){
   if(!supabaseReady()||!state.current) return;
   const {data,error}=await SB.from('notifications').select('*').eq('user_id',state.current).order('created_at',{ascending:false}).limit(200);
   if(error){console.warn('Realtime notifications:',error.message);return;}
-  state.notifications=(data||[]).map(n=>({id:n.id,userId:n.user_id,type:n.type,text:n.message||'',entityId:n.post_id,read:!!n.is_read,createdAt:n.created_at}));
+  state.notifications=(data||[]).map(n=>({id:n.id,userId:n.user_id,type:n.type,text:n.message||'',entityId:n.post_id,postId:n.post_id,commentId:n.comment_id||null,read:!!n.is_read,createdAt:n.created_at}));
   save();
 }
 async function refreshRealtimePosts(){ if(realtimeBusy) return; realtimeBusy=true; try{await loadSupabasePosts();save();render();}finally{realtimeBusy=false;} }
@@ -853,14 +853,14 @@ function modal(title,body,buttons=""){
   $("modalRoot").querySelectorAll("[data-close-modal]").forEach(el=>el.onclick=()=>closeModal());
 }
 function closeModal(){ $("modalRoot").innerHTML=""; }
-async function notify(userId,type,text,entityId=null){
+async function notify(userId,type,text,entityId=null,commentId=null){
   if(!userId || userId===state.current)return null;
-  const n={id:crypto.randomUUID(),userId,type,text,entityId,read:false,createdAt:new Date().toISOString()};
+  const n={id:crypto.randomUUID(),userId,type,text,entityId,postId:entityId,commentId,read:false,createdAt:new Date().toISOString()};
   state.notifications.unshift(n); save();
   if(supabaseReady() && state.current){
     try{
       const {error}=await SB.rpc('tafa_create_notification',{
-        p_user_id:userId,p_type:type,p_message:text,p_post_id:entityId
+        p_user_id:userId,p_type:type,p_message:text,p_post_id:entityId,p_comment_id:commentId
       });
       if(error) throw error;
     }catch(error){
@@ -968,6 +968,7 @@ function renderPost(p){
   if(!canSeePost(p))return"";
   const reactions=p.reactions||{}, count=Object.values(reactions).reduce((a,b)=>a+b,0), mine=p.myReaction?.[state.current]||"";
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
+  const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
   const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":""}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`:`<div class="post-media-wrap media-click" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`):"";
   const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
@@ -980,7 +981,7 @@ function renderPost(p){
     <div class="post-stats"><span class="reaction-summary">${count?`✦ ${count}`:""}</span><span>${comments.length} commentaires</span><span>${p.shares||0} partages</span></div>
     ${openReactionPostId===p.id?renderInlineReactionPicker(p):""}
     <div class="post-actions premium-reaction-bar"><button class="${mine?"is-reacted":""}" data-action="reactionMenu" data-id="${p.id}"><span class="reaction-action-icon">${mine?reactionEmoji(mine):"♡"}</span><span>${mine||"J'aime"}</span></button><button data-action="comment" data-id="${p.id}"><span class="reaction-action-icon">◯</span><span>Commenter</span></button><button data-action="share" data-id="${p.id}"><span class="reaction-action-icon">↗</span><span>Partager</span></button></div>
-    <div class="comments">${comments.slice(-4).map(c=>renderComment(c,p.id)).join("")}<form class="comment-form" data-comment-form="${p.id}">${avatar(me(),"avatar sm")}<input placeholder="Écrire un commentaire..." required><button class="btn primary" type="submit">Envoyer</button></form></div>
+    <div class="comments">${(notificationFocus?comments:comments.slice(-4)).map(c=>renderComment(c,p.id)).join("")}<form class="comment-form" data-comment-form="${p.id}">${avatar(me(),"avatar sm")}<input placeholder="Écrire un commentaire..." required><button class="btn primary" type="submit">Envoyer</button></form></div>
   </article>`;
 }
 function reactionEmoji(type){
@@ -998,7 +999,7 @@ function renderComment(c,postId){
   const expanded=expandedCommentReplies.has(c.id);
   const replyHtml=expanded?`<div class="comment-replies-v115">${replies.map(r=>renderComment(r,postId)).join("")}</div>`:"";
   const replyToggle=replies.length?`<button data-action="toggleReplies" data-id="${esc(c.id)}">${expanded?"Masquer":"Voir"} ${replies.length} réponse${replies.length>1?"s":""}</button>`:"";
-  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
+  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""} ${window.tafaNotificationTarget?.commentId===c.id?"notification-comment-target":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
 }
 function requestSentRow(r){
   const u=findUser(r.to); if(!u)return "";
@@ -1208,7 +1209,7 @@ function renderNotifications(){
   return `${pageBar}<section class="notifications-premium">
     <div class="notification-hero"><div><span class="eyebrow">TAFAß</span><h1>Notifications</h1><small>${unread?`${unread} nouvelle${unread>1?'s':''}`:'Tout est à jour'}</small></div><div class="notification-hero-actions"><button class="icon-btn" data-action="markAllRead" title="Tout lire">✓</button><button class="icon-btn" data-action="clearNotifications" title="Effacer">⌫</button></div></div>
     <div class="notification-filter"><span class="active">Toutes</span><span>${unread?'Non lues '+unread:'À jour'}</span></div>
-    <div class="notification-stack">${list.length?list.map(n=>{const actor=findUser(n.actorId)||me();const kind=n.type||'activity';return `<article class="notification-card ${n.read?'':'is-unread'}" data-action="readNotif" data-id="${n.id}"><div class="notification-icon notification-${esc(kind)}">${iconMap[kind]||'•'}</div>${avatar(actor,'avatar notif-avatar')}<div class="notification-content"><div class="notification-line"><b>${esc(displayName(actor))}</b><span class="notification-type">${esc(typeMap[kind]||'Activité')}</span></div><p>${esc(n.text)}</p><small>${timeAgo(n.createdAt)}</small></div><span class="notification-dot ${n.read?'read':''}"></span></article>`}).join(''):`<div class="notification-empty"><div class="notification-empty-icon">✓</div><b>Aucune notification</b><span>Vous êtes à jour.</span></div>`}</div>
+    <div class="notification-stack">${list.length?list.map(n=>{const actor=findUser(n.actorId)||me();const kind=n.type||'activity';const clickable=!!n.postId;return `<article class="notification-card ${n.read?'':'is-unread'} ${clickable?'notification-clickable':''}" data-action="readNotif" data-id="${n.id}"><div class="notification-icon notification-${esc(kind)}">${iconMap[kind]||'•'}</div>${avatar(actor,'avatar notif-avatar')}<div class="notification-content"><div class="notification-line"><b>${esc(displayName(actor))}</b><span class="notification-type">${esc(typeMap[kind]||'Activité')}</span></div><p>${esc(n.text)}</p><small>${timeAgo(n.createdAt)}${clickable?' · Ouvrir':' '}</small></div><span class="notification-dot ${n.read?'read':''} ${clickable?'notification-open-arrow':''}'>${clickable?'›':''}</span></article>`}).join(''):`<div class="notification-empty"><div class="notification-empty-icon">✓</div><b>Aucune notification</b><span>Vous êtes à jour.</span></div>`}</div>
   </section>`;
 }
 function renderMessages(){
@@ -1730,7 +1731,7 @@ async function handleAction(e,el){
   if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
   if(a==="markAllRead"){state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});save();render();return;}
   if(a==="clearNotifications"){state.notifications=state.notifications.filter(n=>n.userId!==state.current);save();render();return;}
-  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n)n.read=true;save();render();return;}
+  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true;save();if(n.postId){window.tafaNotificationTarget={postId:n.postId,commentId:n.commentId||null};routeTo('home');setTimeout(()=>{const target=n.commentId?document.querySelector(`[data-comment=\"${CSS.escape(n.commentId)}\"]`):document.querySelector(`[data-post=\"${CSS.escape(n.postId)}\"]`);target?.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>{window.tafaNotificationTarget=null;},900);},80);return;}render();}return;}
   if(a==="newConversation")return newConversation();
   if(a==="startPersonConversation")return startConversation(id);
   if(a==="selectConversation"){activeConversation=id;render();return;}
@@ -1844,19 +1845,11 @@ async function toggleCommentLike(id){
   if(!c || !supabaseReady() || !state.current) return toast("Connexion requise");
   const liked=!!c.likes?.[state.current];
   try{
-    if(liked){
-      const {error}=await SB.from("comment_likes").delete().eq("comment_id",id).eq("user_id",state.current);
-      if(error) throw error;
-      c.likes=c.likes||{};
-      delete c.likes[state.current];
-    }else{
-      const {error}=await SB.from("comment_likes").insert({comment_id:id,user_id:state.current});
-      if(error) throw error;
-      c.likes=c.likes||{};
-      c.likes[state.current]=true;
-    }
-    save();
-    render();
+    const {data,error}=await SB.rpc("tafa_set_comment_like",{p_comment_id:id,p_like:!liked});
+    if(error) throw error;
+    c.likes=c.likes||{};
+    if(liked) delete c.likes[state.current]; else c.likes[state.current]=true;
+    save(); render();
   }catch(err){
     console.error("toggleCommentLike:",err);
     toast("J'aime impossible : "+(err.message||"erreur Supabase"));
@@ -1871,7 +1864,6 @@ function replyComment(id){
     try{
       const {error}=await SB.from("comments").insert({post_id:c.postId,parent_id:c.id,user_id:state.current,text:text,content:text});
       if(error)throw error;
-      if(c.userId!==state.current)notify(c.userId,"reply",`${displayName(me())} a répondu à votre commentaire.`,c.postId);
       await loadSupabasePosts();save();closeModal();render();toast("Réponse publiée ✓");
     }catch(err){console.error(err);toast("Réponse impossible : "+(err.message||"erreur Supabase"));}
   };
