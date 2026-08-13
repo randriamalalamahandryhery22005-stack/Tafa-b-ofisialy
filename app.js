@@ -2278,8 +2278,8 @@ async function handleAction(e,el){
   if(a==="createStory")return openStory();
   if(a==="mediaFilter"){mediaFilter=el.dataset.filter||"all";return render();}
   if(a==="marketMore")return marketMore(id);
-  if(a==="openMarketItem"){const item=(state.marketplace||[]).find(x=>x.id===id);if(item)return modal(item.title,`<div class="market-modal"><span class="type-pill">${esc(item.kind||"Produit")}</span><h3>${esc(item.price||"Prix à définir")}</h3><p>${esc(item.description||"")}</p><p class="muted">${esc(item.location||"Madagascar")}</p><button class="btn primary wide" data-action="messageSeller" data-id="${item.ownerId}">Contacter le vendeur</button></div>`);return;}
-  if(a==="messageSeller")return startConversation(id);
+  if(a==="openMarketItem"){const item=(state.marketplace||[]).find(x=>x.id===id);if(item)return modal(item.title,`<div class="market-modal"><span class="type-pill">${esc(item.kind||"Produit")}</span><h3>${esc(item.price||"Prix à définir")}</h3><p>${esc(item.description||"")}</p><p class="muted">${esc(item.location||"Madagascar")}</p>${item.ownerId!==state.current?`<button class="btn primary wide" data-action="messageSeller" data-id="${item.id}">Contacter le vendeur</button>`:`<div class="market-owner-note">C'est votre annonce.</div>`}</div>`);return;}
+  if(a==="messageSeller")return startMarketplaceConversation(id);
   if(a==="marketFilter"){marketFilter=el.dataset.filter||"all";return render();}
   if(a==="forgotBtn")return forgot();
 }
@@ -2462,7 +2462,7 @@ function marketMore(id){
   modal("Options de l'annonce",`<div class="premium-action-sheet-v85">
     <button class="action-sheet-item-v85" data-action="viewMarketMedia" data-id="${id}"><span>◉</span><b>Voir la photo</b><i>›</i></button>
     <button class="action-sheet-item-v85" data-action="downloadMarketMedia" data-id="${id}"><span>⇩</span><b>Enregistrer</b><i>›</i></button>
-    <button class="action-sheet-item-v85" data-action="messageSeller" data-id="${x.ownerId}"><span>◈</span><b>Contacter</b><i>›</i></button>
+    <button class="action-sheet-item-v85" data-action="messageSeller" data-id="${x.id}"><span>◈</span><b>Contacter</b><i>›</i></button>
     <button class="action-sheet-item-v85" data-action="reportMarket" data-id="${id}"><span>⚑</span><b>Signaler</b><i>›</i></button>
     ${own?`<button class="action-sheet-item-v85 danger" data-action="deleteMarket" data-id="${id}"><span>⌫</span><b>Supprimer</b><i>›</i></button>`:""}
   </div>`);
@@ -2531,6 +2531,27 @@ async function viewStory(id){
 }
 function toggleFollow(id){if(id===state.current)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0)state.follows.splice(i,1);else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});notify(id,"follow",`${displayName(me())} vous suit maintenant.`);}save();render();}
 function togglePageFollow(id){const p=findPage(id);if(!p)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0){state.follows.splice(i,1);p.followers=Math.max(0,(p.followers||0)-1);}else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});p.followers=(p.followers||0)+1;notify(p.ownerId,"follow",`${displayName(me())} suit votre Page.`);}save();render();}
+async function startMarketplaceConversation(listingId){
+  const item=(state.marketplace||[]).find(x=>x.id===listingId);
+  if(!item) return toast("Annonce introuvable.");
+  if(!state.current) return toast("Connectez-vous pour contacter le vendeur.");
+  if(item.ownerId===state.current) return toast("Vous êtes le propriétaire de cette annonce.");
+  const ownerId=item.ownerId;
+  let c=state.conversations.find(c=>c.type==="private"&&Array.isArray(c.members)&&c.members.includes(state.current)&&c.members.includes(ownerId));
+  if(!c){
+    c={id:crypto.randomUUID(),type:"private",members:[state.current,ownerId],createdAt:new Date().toISOString()};
+    if(supabaseReady()){
+      try{ await persistConversation(c); }
+      catch(e){ console.error("startMarketplaceConversation:",e); toast("Conversation impossible : "+(e.message||"erreur Supabase")); return; }
+    }
+    state.conversations.push(c);
+    save();
+  }
+  activeConversation=c.id;
+  routeTo("messages");
+  if(supabaseReady()) await loadSupabaseMessages();
+  render();
+}
 async function startConversation(id){
   if(!state.current || !id || id===state.current) return;
   let c=state.conversations.find(c=>c.type==="private"&&Array.isArray(c.members)&&c.members.includes(state.current)&&c.members.includes(id));
