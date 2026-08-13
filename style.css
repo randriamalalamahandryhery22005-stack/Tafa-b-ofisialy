@@ -3969,3 +3969,11 @@ body.dark .top-actions .menu-action{
 .tafa-reel-video-v174 .tafa-native-video-v174{max-height:78vh}
 .tafa-video-v174 .tafa-native-video-v174{max-height:80vh}
 [data-media-kind="video"],[data-media-kind="reel"]{border-radius:12px}
+
+/* V1.1.7.5 — Friends advanced UI */
+.tafa-friends-v175{display:grid;gap:10px}
+.tafa-friend-card-v175{display:flex;align-items:center;gap:10px;min-width:0;padding:10px;border-radius:14px}
+.tafa-friend-card-v175 .friend-main{min-width:0;flex:1}
+.tafa-friend-card-v175 .friend-name{font-weight:700;overflow-wrap:anywhere}
+.tafa-friend-card-v175 .friend-meta{font-size:.82rem;opacity:.68}
+.tafa-friend-actions-v175{display:flex;flex-wrap:wrap;gap:6px}

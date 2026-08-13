@@ -35,6 +35,26 @@ let expandedCommentTexts=new Set();
 /* V1.1.7.3 — schema-correct global search */
 async 
 /* V1.1.7.4 — strict Videos/Reels separation + natural media sizing */
+
+/* V1.1.7.5 — Friends advanced helpers, matching existing schema */
+function tafaFriendStatusV175(userId){
+  const me=state.current;
+  if(!me||!userId||me===userId) return "self";
+  const sent=(state.friendRequests||[]).find(r=>r.sender_id===me&&r.receiver_id===userId);
+  const received=(state.friendRequests||[]).find(r=>r.sender_id===userId&&r.receiver_id===me);
+  const friends=(state.friendships||[]).find(r=>
+    (r.requester_id===me&&r.receiver_id===userId) ||
+    (r.requester_id===userId&&r.receiver_id===me)
+  );
+  if(friends) return "friends";
+  if(sent) return "sent";
+  if(received) return "received";
+  return "none";
+}
+function tafaFriendUsersV175(users){
+  return (users||[]).filter(u=>u&&u.id!==state.current);
+}
+
 function tafaMediaKindV174(post){
   const t=String(post?.media_type||"").toLowerCase().trim();
   if(t.includes("reel")) return "reel";
@@ -3333,4 +3353,8 @@ function tafaNotificationClickV172(el){
 function tafaFilterMediaV174(posts, kind){
   const k=kind==="reels"?"reel":"video";
   return (posts||[]).filter(p=>tafaMediaKindV174(p)===k);
+}
+
+function tafaFriendSuggestionsV175(users){
+  return tafaFriendUsersV175(users).filter(u=>tafaFriendStatusV175(u.id)==="none");
 }
