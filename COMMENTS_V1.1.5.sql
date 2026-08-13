@@ -1,106 +1,125 @@
--- ============================================================
--- TAFAß V1.1.5.1 — FIX COMMENT CONTENT COLUMN
--- Correction for databases where public.comments.content is NOT NULL.
--- The frontend now writes to content (not text).
--- ============================================================
+-- TAFAß V1.1.5.4 — COMMENTS / REPLIES SCHEMA COMPATIBILITY
+-- The existing database requires public.comments.text NOT NULL.
+-- The frontend therefore writes BOTH text and content.
 
--- Ensure content exists and is populated from legacy columns when possible.
-alter table public.comments add column if not exists content text;
+ALTER TABLE public.comments
+ADD COLUMN IF NOT EXISTS content text;
 
-update public.comments
-set content = coalesce(content, '')
-where content is null;
+UPDATE public.comments
+SET content = text
+WHERE content IS NULL;
 
-alter table public.comments alter column content set not null;
-
--- Parent validation: a reply must belong to the same publication.
-create or replace function public.tafa_validate_comment_parent()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  if new.parent_id is not null and not exists (
-    select 1 from public.comments parent
-    where parent.id = new.parent_id
-      and parent.post_id = new.post_id
-  ) then
-    raise exception 'La réponse doit appartenir à la même publication que le commentaire parent.';
-  end if;
-  return new;
-end;
+CREATE OR REPLACE FUNCTION public.tafa_validate_comment_parent()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.parent_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.comments parent
+    WHERE parent.id = NEW.parent_id
+      AND parent.post_id = NEW.post_id
+  ) THEN
+    RAISE EXCEPTION 'La réponse doit appartenir à la même publication que le commentaire parent.';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
-drop trigger if exists trg_tafa_validate_comment_parent on public.comments;
-create trigger trg_tafa_validate_comment_parent
-before insert or update of parent_id, post_id on public.comments
-for each row execute function public.tafa_validate_comment_parent();
+DROP TRIGGER IF EXISTS trg_tafa_validate_comment_parent ON public.comments;
+CREATE TRIGGER trg_tafa_validate_comment_parent
+BEFORE INSERT OR UPDATE OF parent_id, post_id
+ON public.comments
+FOR EACH ROW EXECUTE FUNCTION public.tafa_validate_comment_parent();
 
--- Server notification for comments/replies.
-create or replace function public.tafa_notify_new_comment()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
+-- Keep the two possible text columns synchronized.
+CREATE OR REPLACE FUNCTION public.tafa_sync_comment_text()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.text IS NULL OR btrim(NEW.text) = '' THEN
+    NEW.text := COALESCE(NEW.content, '');
+  END IF;
+  IF NEW.content IS NULL OR btrim(NEW.content) = '' THEN
+    NEW.content := NEW.text;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_tafa_sync_comment_text ON public.comments;
+CREATE TRIGGER trg_tafa_sync_comment_text
+BEFORE INSERT OR UPDATE OF text, content
+ON public.comments
+FOR EACH ROW EXECUTE FUNCTION public.tafa_sync_comment_text();
+
+CREATE OR REPLACE FUNCTION public.tafa_notify_new_comment()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
   v_recipient uuid;
   v_actor_name text;
   v_message text;
-begin
-  select p.owner_id into v_recipient
-  from public.posts p where p.id = new.post_id;
+BEGIN
+  IF NEW.parent_id IS NULL THEN
+    SELECT p.owner_id INTO v_recipient
+    FROM public.posts p WHERE p.id = NEW.post_id;
+  ELSE
+    SELECT c.user_id INTO v_recipient
+    FROM public.comments c WHERE c.id = NEW.parent_id;
+  END IF;
 
-  if new.parent_id is not null then
-    select c.user_id into v_recipient
-    from public.comments c where c.id = new.parent_id;
-  end if;
+  IF v_recipient IS NULL OR v_recipient = NEW.user_id THEN
+    RETURN NEW;
+  END IF;
 
-  if v_recipient is null or v_recipient = new.user_id then
-    return new;
-  end if;
+  SELECT trim(concat_ws(' ', pr.first_name, pr.last_name))
+  INTO v_actor_name
+  FROM public.profiles pr WHERE pr.id = NEW.user_id;
 
-  select trim(concat_ws(' ', pr.first_name, pr.last_name))
-    into v_actor_name
-  from public.profiles pr where pr.id = new.user_id;
   v_actor_name := coalesce(nullif(v_actor_name,''),'Un utilisateur');
 
-  if new.parent_id is null then
+  IF NEW.parent_id IS NULL THEN
     v_message := v_actor_name || ' a commenté votre publication.';
-  else
+  ELSE
     v_message := v_actor_name || ' a répondu à votre commentaire.';
-  end if;
+  END IF;
 
-  insert into public.notifications(
+  INSERT INTO public.notifications(
     recipient_id, actor_id, type, title, message,
     entity_type, entity_id, is_read, created_at
-  ) values(
-    v_recipient, new.user_id,
-    case when new.parent_id is null then 'comment' else 'reply' end,
-    case when new.parent_id is null then 'Nouveau commentaire' else 'Nouvelle réponse' end,
+  ) VALUES (
+    v_recipient, NEW.user_id,
+    CASE WHEN NEW.parent_id IS NULL THEN 'comment' ELSE 'reply' END,
+    CASE WHEN NEW.parent_id IS NULL THEN 'Nouveau commentaire' ELSE 'Nouvelle réponse' END,
     v_message,
-    case when new.parent_id is null then 'post' else 'comment' end,
-    case when new.parent_id is null then new.post_id else new.parent_id end,
+    CASE WHEN NEW.parent_id IS NULL THEN 'post' ELSE 'comment' END,
+    CASE WHEN NEW.parent_id IS NULL THEN NEW.post_id ELSE NEW.parent_id END,
     false, now()
   );
-  return new;
-end;
+
+  RETURN NEW;
+END;
 $$;
 
-drop trigger if exists trg_tafa_new_comment_notification on public.comments;
-create trigger trg_tafa_new_comment_notification
-after insert on public.comments
-for each row execute function public.tafa_notify_new_comment();
+DROP TRIGGER IF EXISTS trg_tafa_new_comment_notification ON public.comments;
+CREATE TRIGGER trg_tafa_new_comment_notification
+AFTER INSERT ON public.comments
+FOR EACH ROW EXECUTE FUNCTION public.tafa_notify_new_comment();
 
-create index if not exists comments_parent_created_idx
-on public.comments(parent_id, created_at asc);
+CREATE INDEX IF NOT EXISTS comments_parent_created_idx
+ON public.comments(parent_id, created_at ASC);
 
-do $$
-begin
-  alter publication supabase_realtime add table public.comments;
-exception when duplicate_object then null;
-end $$;
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.comments;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
-notify pgrst, 'reload schema';
-select 'TAFA V1.1.5.1 — content FIX OK' as status;
+NOTIFY pgrst, 'reload schema';
+SELECT 'TAFA V1.1.5.4 — text + content COMPATIBILITY OK' AS status;

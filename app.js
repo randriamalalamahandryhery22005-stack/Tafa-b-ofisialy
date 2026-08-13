@@ -1647,7 +1647,7 @@ function bindPageEvents(){
     e.preventDefault();const postId=form.dataset.commentForm,text=form.querySelector("input").value.trim();if(!text)return;
     if(!supabaseReady()||!state.current){toast("Connexion requise");return;}
     try{
-      const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,content:text});
+      const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,text:text,content:text});
       if(error)throw error;
       await loadSupabasePosts();save();render();toast("Commentaire publié ✓");
     }catch(err){console.error(err);toast("Commentaire impossible : "+(err.message||"erreur Supabase"));}
@@ -1879,7 +1879,7 @@ function replyComment(id){
   $("replyForm").onsubmit=async e=>{
     e.preventDefault(); const text=$("replyText").value.trim(); if(!text)return;
     try{
-      const {error}=await SB.from("comments").insert({post_id:c.postId,parent_id:c.id,user_id:state.current,content:text});
+      const {error}=await SB.from("comments").insert({post_id:c.postId,parent_id:c.id,user_id:state.current,text:text,content:text});
       if(error)throw error;
       if(c.userId!==state.current)notify(c.userId,"reply",`${displayName(me())} a répondu à votre commentaire.`,c.postId);
       await loadSupabasePosts();save();closeModal();render();toast("Réponse publiée ✓");
@@ -1899,7 +1899,7 @@ function editComment(id){
     e.preventDefault();
     const text=$("editCommentText").value.trim(); if(!text)return;
     try{
-      const {error}=await SB.from("comments").update({content:text,edited_at:new Date().toISOString()}).eq("id",id).eq("user_id",state.current);
+      const {error}=await SB.from("comments").update({text:text,content:text,edited_at:new Date().toISOString()}).eq("id",id).eq("user_id",state.current);
       if(error)throw error;
       await loadSupabasePosts();save();closeModal();render();toast("Commentaire modifié ✓");
     }catch(err){console.error(err);toast("Modification impossible : "+(err.message||"erreur Supabase"));}
