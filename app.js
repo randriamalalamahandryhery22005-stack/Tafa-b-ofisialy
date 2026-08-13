@@ -1131,6 +1131,48 @@ function openSearchDeepLink(value){
   return false;
 }
 
+async function searchSupabaseGlobal(query){
+  if(!supabaseReady() || !state.current || !query) return;
+  const q=String(query).trim().replace(/[%,]/g,' ').replace(/\s+/g,' ');
+  if(!q) return;
+  try{
+    // Search real accounts in Supabase. The result is merged with the local cache
+    // so an account can be found even when it has no friendship or publication.
+    const profileOr=[
+      `first_name.ilike.%${q}%`,`last_name.ilike.%${q}%`,`username.ilike.%${q}%`,
+      `email.ilike.%${q}%`,`country.ilike.%${q}%`,`location.ilike.%${q}%`
+    ].join(',');
+    const {data:profiles,error:profileError}=await SB.from('profiles')
+      .select('*').or(profileOr).order('created_at',{ascending:false}).limit(80);
+    if(profileError) throw profileError;
+    mergeUsersFromProfiles(profiles||[]);
+
+    // Search posts with the columns used by the current Tafaß schema.
+    const postOr=[`title.ilike.%${q}%`,`text.ilike.%${q}%`].join(',');
+    const {data:posts,error:postError}=await SB.from('posts')
+      .select('*').or(postOr).order('created_at',{ascending:false}).limit(100);
+    if(!postError){
+      const ownerIds=[...new Set((posts||[]).map(r=>r.owner_id||r.user_id).filter(Boolean))];
+      if(ownerIds.length){
+        const {data:owners}=await SB.from('profiles').select('*').in('id',ownerIds);
+        mergeUsersFromProfiles(owners||[]);
+      }
+      const existing=new Map(state.posts.map(x=>[x.id,x]));
+      (posts||[]).forEach(row=>existing.set(row.id,{
+        id:row.id,ownerId:row.owner_id||row.user_id,ownerType:'user',
+        title:row.title||'Publication',text:row.text??row.content??'',
+        media:row.media_url||'',mediaType:(row.media_type==='video'?'video':(row.media_type||'text')),
+        visibility:row.visibility||'Public',allowedUsers:[],tags:[],createdAt:row.created_at,
+        editedAt:row.edited_at||row.updated_at,shares:Number(row.shares||0),reactions:{},myReaction:{}
+      }));
+      state.posts=[...existing.values()];
+    }
+    save();
+  }catch(err){
+    console.error('Recherche globale Supabase:',err);
+  }
+}
+
 async function refreshSearchProfiles(){
   if(!supabaseReady() || !state.current) return;
   try{
@@ -1767,7 +1809,7 @@ function bindPageEvents(){
   document.querySelectorAll("[data-chat-form]").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const id=form.dataset.chatForm,text=form.querySelector('[name="text"]').value.trim(),input=form.querySelector('input[type=file]'),files=[...(input?.files||[])];if(!text&&!files.length)return;const payload=[];for(const f of files){const data=await fileToData(f);payload.push({name:f.name,type:f.type,size:f.size,data});}sendMessage(id,text,payload);form.reset();render();});
   const theme=$("themeSelect");if(theme)theme.onchange=()=>{state.settings.dark=theme.value==="dark";save();applyTheme();};
   const lang=$("languageSelect");if(lang)lang.onchange=()=>{state.settings.language=lang.value;save();toast("Langue enregistrée");};
-  const ps=$("pageSearchInput");const pf=$("pageSearchForm");if(ps){ps.oninput=()=>{window.globalSearchQuery=ps.value;const top=$("globalSearch");if(top)top.value=ps.value;};}if(pf){pf.onsubmit=e=>{e.preventDefault();const q=ps?.value.trim()||"";if(!q)return;committedSearchQuery=q;if(openSearchDeepLink(q))return;state.searches=[q,...state.searches.filter(x=>x!==q)].slice(0,15);save();render();};}
+  const ps=$("pageSearchInput");const pf=$("pageSearchForm");if(ps){ps.oninput=()=>{window.globalSearchQuery=ps.value;const top=$("globalSearch");if(top)top.value=ps.value;};}if(pf){pf.onsubmit=e=>{e.preventDefault();const q=ps?.value.trim()||"";if(!q)return;committedSearchQuery=q;if(openSearchDeepLink(q))return;state.searches=[q,...state.searches.filter(x=>x!==q)].slice(0,15);save();render();searchSupabaseGlobal(q).then(()=>{if(committedSearchQuery===q)render();});};}
   const ms=$("mediaSearchInput");if(ms)ms.oninput=()=>{window.mediaSearch=ms.value;clearTimeout(window.mediaSearchTimer);window.mediaSearchTimer=setTimeout(render,180);};
   const fs=$("friendsSearchInput");if(fs)fs.oninput=()=>{friendSearch=fs.value;clearTimeout(window.friendSearchTimer);window.friendSearchTimer=setTimeout(render,150);};
   const cs=$("conversationSearch");if(cs)cs.oninput=()=>{const q=cs.value.toLowerCase().trim();document.querySelectorAll(".conversation-row").forEach(x=>x.style.display=x.textContent.toLowerCase().includes(q)?"flex":"none");const box=$("messagePeopleResults");if(box){if(!q){box.innerHTML="";return;}const people=state.users.filter(u=>u.id!==state.current&&(displayName(u)+" "+(u.username||"")).toLowerCase().includes(q)).slice(0,6);box.innerHTML=people.map(u=>`<button class="message-person-result" data-action="startPersonConversation" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")}</small></span>${isOnline(u)?`<i class="online-dot"></i>`:""}</button>`).join("")||`<div class="message-search-empty">Aucune personne</div>`;}};
