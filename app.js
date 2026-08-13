@@ -42,7 +42,7 @@ function tafasDetectMediaType(file) {
 // Tafaß V1.1.1 — Delete publication safely.
 // Deletes the Storage object first (when media exists), then the DB row.
 // The DB delete is restricted by the existing RLS policy to the owner.
-async function tafasDeletePublication(post) {
+window.tafasDeletePublication = async function tafasDeletePublication(post) {
   if (!post || !post.id) throw new Error('Publication invalide.');
   if (!window.supabaseClient) throw new Error('Supabase non disponible.');
 
