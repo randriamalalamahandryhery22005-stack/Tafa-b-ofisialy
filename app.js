@@ -26,9 +26,28 @@ const SB = window.supabaseClient;
 let tafaRealtimeChannels=[];
 let realtimeBusy=false;
 let expandedCommentReplies=new Set();
+let expandedCommentTexts=new Set();
 
 // Tafaß V1.1 FINAL — Photo/Video
 // Tafaß V1.1 — robust media type detection (photo/video)
+
+function tafaNotificationLabelV172(n){
+  const t=String(n?.type||"").toLowerCase();
+  if(t.includes("like")||t.includes("reaction")) return "J'aime";
+  if(t.includes("reply")) return "Réponse";
+  if(t.includes("comment")) return "Commentaire";
+  if(t.includes("friend")||t.includes("ami")) return "Amitié";
+  if(t.includes("message")) return "Message";
+  return "Notification";
+}
+function tafaNotificationTargetV172(n){
+  return {
+    postId:n?.post_id||n?.postId||null,
+    commentId:n?.comment_id||n?.commentId||null,
+    actorId:n?.actor_id||n?.actorId||null
+  };
+}
+
 function tafasDetectMediaType(file) {
   if (!file) return null;
   const t = String(file.type || '').toLowerCase();
@@ -1236,9 +1255,14 @@ function renderComment(c,postId){
   const liked=!!c.likes?.[state.current];
   const replies=state.comments.filter(x=>x.parentId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   const expanded=expandedCommentReplies.has(c.id);
+  const fullText=String(c.text||"");
+  const longText=fullText.length>260;
+  const textExpanded=expandedCommentTexts.has(c.id);
+  const visibleText=longText&&!textExpanded?fullText.slice(0,260).trimEnd()+"…":fullText;
+  const textToggle=longText?`<button data-action="toggleCommentText" data-id="${esc(c.id)}">${textExpanded?"Voir moins":"Voir plus"}</button>`:"";
   const replyHtml=expanded?`<div class="comment-replies-v115">${replies.map(r=>renderComment(r,postId)).join("")}</div>`:"";
   const replyToggle=replies.length?`<button data-action="toggleReplies" data-id="${esc(c.id)}">${expanded?"Masquer":"Voir"} ${replies.length} réponse${replies.length>1?"s":""}</button>`:"";
-  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""} ${window.tafaNotificationTarget?.commentId===c.id?"notification-comment-target":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
+  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""} ${window.tafaNotificationTarget?.commentId===c.id?"notification-comment-target":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(visibleText)}</p>${textToggle}${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
 }
 function requestSentRow(r){
   const u=findUser(r.to); if(!u)return "";
@@ -2092,6 +2116,7 @@ async function handleAction(e,el){
   if(a==="likeComment")return toggleCommentLike(id);
   if(a==="replyComment")return replyComment(id);
   if(a==="toggleReplies")return toggleCommentReplies(id);
+  if(a==="toggleCommentText"){if(expandedCommentTexts.has(id)) expandedCommentTexts.delete(id); else expandedCommentTexts.add(id); return render();}
   if(a==="editComment")return editComment(id);
   if(a==="deleteComment")return deleteComment(id);
   if(a==="addFriend")return sendFriend(id);
@@ -3217,3 +3242,20 @@ document.addEventListener('click', async (event) => {
     button.disabled = false;
   }
 });
+
+
+function tafaNotificationClickV172(el){
+  if(!el) return;
+  const postId=el.dataset.postId||"";
+  const commentId=el.dataset.commentId||"";
+  const actorId=el.dataset.actorId||"";
+  if(postId){
+    window.tafaNotificationTarget={commentId:commentId||null};
+    if(typeof openPost==="function") return openPost(postId);
+    if(typeof navigate==="function") return navigate("actualites",postId);
+  }
+  if(actorId){
+    if(typeof openProfile==="function") return openProfile(actorId);
+    if(typeof navigate==="function") return navigate("profile",actorId);
+  }
+}

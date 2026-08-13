@@ -3936,3 +3936,18 @@ body.dark .top-actions .menu-action{
 .chat-body-premium{scroll-behavior:smooth}
 .bubble-premium small{display:block;font-size:9px;opacity:.62;margin-top:5px;text-align:right}
 @media(max-width:600px){.chat-file-hint{display:none}.chat-compose-premium{padding:8px;border-radius:18px}.chat-compose-premium .icon-btn{width:36px;height:36px}.chat-compose-premium .send-btn{width:38px;height:38px}}
+
+/* V1.1.7.1 — Advanced comments */
+.comment-bubble p{overflow-wrap:anywhere;word-break:break-word}
+.comment-bubble button[data-action="toggleCommentText"]{border:0;background:transparent;padding:2px 0;margin-top:3px;font-weight:700;cursor:pointer}
+.comment-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.comment-actions button{white-space:nowrap}
+.comment-replies-v115{margin-top:8px}
+
+/* V1.1.7.2 — notifications advanced UI */
+.notification-card{position:relative;display:flex;align-items:center;gap:10px;cursor:pointer}
+.notification-card.unread{font-weight:600}
+.notification-card .notification-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
+.notification-card .notification-main{min-width:0;flex:1}
+.notification-card .notification-text{overflow-wrap:anywhere;word-break:break-word}
+.notification-card small{opacity:.65}
