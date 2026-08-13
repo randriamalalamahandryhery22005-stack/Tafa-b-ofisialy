@@ -979,9 +979,18 @@ function renderRoute(){
   }
 }
 function renderHome(){
-  const posts=[...state.posts].filter(canSeePost).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const feedFilter=window.tafaHomeFeedFilter||"all";
+  let posts=[...state.posts].filter(canSeePost);
+  if(feedFilter==="friends") posts=posts.filter(p=>p.ownerId===state.current||isFriend(p.ownerId));
+  if(feedFilter==="mine") posts=posts.filter(p=>p.ownerId===state.current);
+  if(feedFilter==="photos") posts=posts.filter(p=>["photo","image"].includes(String(p.mediaType||"").toLowerCase()));
+  if(feedFilter==="videos") posts=posts.filter(p=>["video","reel"].includes(String(p.mediaType||"").toLowerCase()));
+  posts.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   return `<section class="news-feed-v90">
     <div class="feed-refresh-row-v95"><span>Actualités</span><button class="btn secondary" data-action="refreshFeed">↻ Actualiser</button></div>
+    <div class="feed-tabs-v1168" role="tablist" aria-label="Fil d’actualités">
+      ${[["all","Tout"],["friends","Amis"],["mine","Mes publications"],["photos","Photos"],["videos","Vidéos"]].map(([key,label])=>`<button type="button" class="feed-tab-v1168 ${feedFilter===key?"active":""}" data-action="feedFilter" data-filter="${key}" role="tab" aria-selected="${feedFilter===key}">${label}</button>`).join("")}
+    </div>
     <div class="news-composer-v90">
       <button class="news-avatar-button-v90" data-route="profile">${avatar(me(),"avatar lg")}</button>
       <button class="news-composer-input-v90" data-action="openComposer">À quoi pensez-vous ?</button>
@@ -1822,6 +1831,11 @@ async function handleAction(e,el){
   if(a==="nativeShareLink"){ const url=appLink(id); if(navigator.share){navigator.share({title:"Tafaß",url}).catch(()=>{});} else copyAppLink(id,"Lien copié"); return; }
   if(a==="shareLink")return shareLink(id);
   if(a==="openComposer")return openComposer(el.dataset.kind||"post");
+  if(a==="feedFilter"){
+    window.tafaHomeFeedFilter=el.dataset.filter||"all";
+    render();
+    return;
+  }
   if(a==="refreshFeed"){
     if(!supabaseReady()) return toast("Supabase non disponible");
     try{
