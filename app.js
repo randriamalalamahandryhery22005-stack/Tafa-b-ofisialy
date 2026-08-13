@@ -1285,7 +1285,7 @@ function renderProfile(u){
       <div class="profile-name-block profile-name-below-avatar"><h1>${esc(displayName(u))}${pseudo}</h1><div class="profile-type-line">${typePill(u)} ${verified(u)}</div><div class="profile-handle">${profileVisibility(u,"username",own)?`@${esc(u.username||"utilisateur")}`:"Identifiant privé"}</div></div>
       <p class="social-bio">${esc(profileValue(u,"bio","Bienvenue dans l'univers Tafaß."))}</p>
       <div class="profile-details">${profileVisibility(u,"location",own)&&u.location?`<span>⌖ ${esc(u.location)}</span>`:""}<span>✦ ${u.type==="page"?"Page":"Compte"}</span></div>
-      <div class="profile-actions-premium">${own?`<button class="btn primary profile-main-btn" data-action="createStory">＋ Ajouter une story</button><button class="btn secondary profile-main-btn" data-action="editProfile">✎ Modifier le profil</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:admin?`<button class="btn primary profile-main-btn" data-action="follow" data-id="${u.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:`<button class="btn primary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button>${friendActionState(u.id)==="friends"?`<button class="btn secondary profile-main-btn" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`:friendActionState(u.id)==="sent"?`<button class="btn secondary profile-main-btn" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id).id}">Invitation envoyée</button>`:friendActionState(u.id)==="received"?`<button class="btn secondary profile-main-btn" data-action="acceptFriend" data-id="${incomingFriendRequest(u.id).id}">Accepter l'invitation</button>`:`<button class="btn secondary profile-main-btn" data-action="addFriend" data-id="${u.id}">＋ Ajouter</button>`}<button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`}</div>
+      <div class="profile-actions-premium">${own?`<button class="btn primary profile-main-btn" data-action="createStory">＋ Ajouter une story</button><button class="btn secondary profile-main-btn" data-action="editProfile">✎ Modifier le profil</button><button class="icon-btn profile-refresh-btn" data-action="refreshProfile" data-id="${u.id}" title="Actualiser le profil">↻</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:admin?`<button class="btn primary profile-main-btn" data-action="follow" data-id="${u.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:`<button class="btn primary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button>${friendActionState(u.id)==="friends"?`<button class="btn secondary profile-main-btn" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`:friendActionState(u.id)==="sent"?`<button class="btn secondary profile-main-btn" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id).id}">Invitation envoyée</button>`:friendActionState(u.id)==="received"?`<button class="btn secondary profile-main-btn" data-action="acceptFriend" data-id="${incomingFriendRequest(u.id).id}">Accepter l'invitation</button>`:`<button class="btn secondary profile-main-btn" data-action="addFriend" data-id="${u.id}">＋ Ajouter</button>`}<button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`}</div>
       <div class="profile-stats-premium"><button data-action="profileTab" data-tab="friends"><b>${friends}</b><span>Amis</span></button><div><b>${followers}</b><span>Abonnés</span></div><div><b>${following}</b><span>Suivis</span></div></div>
     </div>
     <nav class="profile-tabs-premium"><button class="${profileTab==="posts"?"active":""}" data-action="profileTab" data-tab="posts">Publications</button><button class="${profileTab==="photos"?"active":""}" data-action="profileTab" data-tab="photos">Photos</button><button class="${profileTab==="reels"?"active":""}" data-action="profileTab" data-tab="reels">Reels</button><button class="${profileTab==="friends"?"active":""}" data-action="profileTab" data-tab="friends">Amis</button><button class="${profileTab==="about"?"active":""}" data-action="profileTab" data-tab="about">À propos</button></nav>
@@ -1939,6 +1939,20 @@ async function handleAction(e,el){
   if(a==="joinGroup")return joinGroup(id);
   if(a==="editProfile")return editProfile();
   if(a==="editCover")return editCover();
+  if(a==="refreshProfile"){
+    const target=id||profileViewingId||state.current;
+    if(!target||!supabaseReady()) return toast("Session Supabase introuvable.");
+    try{
+      await loadSupabaseProfileById(target);
+      if(target===state.current){
+        await loadSupabaseFriends();
+        await loadSupabasePosts();
+      }
+      if(profileViewingId===target||target===state.current) render();
+      toast("Profil actualisé.");
+    }catch(err){ console.error("refreshProfile:",err); toast(err?.message||"Impossible d'actualiser le profil."); }
+    return;
+  }
   if(a==="deletePost"){
     const p=state.posts.find(x=>x.id===id); if(!p)return;
     if(p.ownerId!==state.current)return toast("Vous ne pouvez pas supprimer cette publication.");
