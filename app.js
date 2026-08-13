@@ -26,6 +26,7 @@ const SB = window.supabaseClient;
 let tafaRealtimeChannels=[];
 let realtimeBusy=false;
 
+// Tafaß V1.1 FINAL — Photo/Video
 // Tafaß V1.1 — robust media type detection (photo/video)
 function tafasDetectMediaType(file) {
   if (!file) return null;
