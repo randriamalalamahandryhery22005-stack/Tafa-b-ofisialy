@@ -93,7 +93,12 @@ async function loadSupabaseNotifications(){
   if(!supabaseReady()||!state.current) return;
   const {data,error}=await SB.from('notifications').select('*').eq('user_id',state.current).order('created_at',{ascending:false}).limit(200);
   if(error){console.warn('Realtime notifications:',error.message);return;}
-  state.notifications=(data||[]).map(n=>({id:n.id,userId:n.user_id,type:n.type,text:n.message||'',entityId:n.post_id,postId:n.post_id,commentId:n.comment_id||null,read:!!n.is_read,createdAt:n.created_at}));
+  state.notifications=(data||[]).map(n=>({
+    id:n.id,userId:n.user_id,type:n.type||'activity',text:n.message||'',
+    entityId:n.post_id||n.comment_id||null,postId:n.post_id||null,
+    commentId:n.comment_id||null,actorId:n.actor_id||null,read:!!n.is_read,
+    createdAt:n.created_at
+  }));
   save();
 }
 async function refreshRealtimePosts(){ if(realtimeBusy) return; realtimeBusy=true; try{await loadSupabasePosts();save();render();}finally{realtimeBusy=false;} }
@@ -1204,12 +1209,12 @@ function renderNotifications(){
   const pageBar=pageContextBar();
   const list=state.notifications.filter(n=>n.userId===state.current).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   const unread=list.filter(n=>!n.read).length;
-  const iconMap={like:'♥',reaction:'✦',comment:'◌',reply:'↩',share:'↗',mention:'@',friend:'♧',follow:'＋',message:'✉',group:'◆',page:'▣',badge:'✓',security:'⌁'};
-  const typeMap={like:'J’aime',reaction:'Réaction',comment:'Commentaire',reply:'Réponse',share:'Partage',mention:'Mention',friend:'Invitation',follow:'Abonnement',message:'Message',group:'Groupe',page:'Page',badge:'Badge',security:'Sécurité'};
+  const iconMap={like:'♥',reaction:'✦',comment:'◌',comment_reaction:'♥',reply:'↩',share:'↗',mention:'@',friend:'♧',follow:'＋',message:'✉',group:'◆',page:'▣',badge:'✓',security:'⌁',activity:'•'};
+  const typeMap={like:'J’aime',reaction:'Réaction',comment:'Commentaire',comment_reaction:'Réaction commentaire',reply:'Réponse',share:'Partage',mention:'Mention',friend:'Invitation',follow:'Abonnement',message:'Message',group:'Groupe',page:'Page',badge:'Badge',security:'Sécurité',activity:'Activité'};
   return `${pageBar}<section class="notifications-premium">
     <div class="notification-hero"><div><span class="eyebrow">TAFAß</span><h1>Notifications</h1><small>${unread?`${unread} nouvelle${unread>1?'s':''}`:'Tout est à jour'}</small></div><div class="notification-hero-actions"><button class="icon-btn" data-action="markAllRead" title="Tout lire">✓</button><button class="icon-btn" data-action="clearNotifications" title="Effacer">⌫</button></div></div>
     <div class="notification-filter"><span class="active">Toutes</span><span>${unread?'Non lues '+unread:'À jour'}</span></div>
-    <div class="notification-stack">${list.length?list.map(n=>{const actor=findUser(n.actorId)||me();const kind=n.type||'activity';const clickable=!!n.postId;return `<article class="notification-card ${n.read?'':'is-unread'} ${clickable?'notification-clickable':''}" data-action="readNotif" data-id="${n.id}"><div class="notification-icon notification-${esc(kind)}">${iconMap[kind]||'•'}</div>${avatar(actor,'avatar notif-avatar')}<div class="notification-content"><div class="notification-line"><b>${esc(displayName(actor))}</b><span class="notification-type">${esc(typeMap[kind]||'Activité')}</span></div><p>${esc(n.text)}</p><small>${timeAgo(n.createdAt)}${clickable?' · Ouvrir':' '}</small></div><span class="notification-dot ${n.read?'read':''} ${clickable?'notification-open-arrow':''}'>${clickable?'›':''}</span></article>`}).join(''):`<div class="notification-empty"><div class="notification-empty-icon">✓</div><b>Aucune notification</b><span>Vous êtes à jour.</span></div>`}</div>
+    <div class="notification-stack">${list.length?list.map(n=>{const actor=findUser(n.actorId)||me();const kind=n.type||'activity';const clickable=!!(n.postId||n.commentId||n.actorId);return `<article class="notification-card ${n.read?'':'is-unread'} ${clickable?'notification-clickable':''}" data-action="readNotif" data-id="${esc(n.id)}"><div class="notification-icon notification-${esc(kind)}">${iconMap[kind]||'•'}</div>${avatar(actor,'avatar notif-avatar')}<div class="notification-content"><div class="notification-line"><b>${esc(displayName(actor))}</b><span class="notification-type">${esc(typeMap[kind]||'Activité')}</span></div><p>${esc(n.text||'Notification')}</p><small>${timeAgo(n.createdAt)}${clickable?' · Ouvrir':' '}</small></div><span class="notification-dot ${n.read?'read':''} ${clickable?'notification-open-arrow':''}">${clickable?'›':''}</span></article>`}).join(''):`<div class="notification-empty"><div class="notification-empty-icon">✓</div><b>Aucune notification</b><span>Vous êtes à jour.</span></div>`}</div>
   </section>`;
 }
 function renderMessages(){
@@ -1731,7 +1736,16 @@ async function handleAction(e,el){
   if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
   if(a==="markAllRead"){state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});save();render();return;}
   if(a==="clearNotifications"){state.notifications=state.notifications.filter(n=>n.userId!==state.current);save();render();return;}
-  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true;save();if(n.postId){window.tafaNotificationTarget={postId:n.postId,commentId:n.commentId||null};routeTo('home');setTimeout(()=>{const target=n.commentId?document.querySelector(`[data-comment=\"${CSS.escape(n.commentId)}\"]`):document.querySelector(`[data-post=\"${CSS.escape(n.postId)}\"]`);target?.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>{window.tafaNotificationTarget=null;},900);},80);return;}render();}return;}
+  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true; if(supabaseReady()&&n.id){SB.from('notifications').update({is_read:true}).eq('id',n.id).eq('user_id',state.current).then(()=>{}).catch(()=>{});} save();
+    if(n.postId||n.commentId){
+      window.tafaNotificationTarget={postId:n.postId||null,commentId:n.commentId||null};
+      routeTo('home');
+      setTimeout(()=>{const target=n.commentId?document.querySelector(`[data-comment=\"${CSS.escape(n.commentId)}\"]`):(n.postId?document.querySelector(`[data-post=\"${CSS.escape(n.postId)}\"]`):null);target?.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>{window.tafaNotificationTarget=null;},1400);},180);
+      return;
+    }
+    if(n.actorId && (n.type==='friend'||n.type==='follow'||n.type==='mention')){routeToProfile(n.actorId);return;}
+    render();
+  }return;}
   if(a==="newConversation")return newConversation();
   if(a==="startPersonConversation")return startConversation(id);
   if(a==="selectConversation"){activeConversation=id;render();return;}
