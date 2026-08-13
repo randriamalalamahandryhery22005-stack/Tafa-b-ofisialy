@@ -1449,8 +1449,8 @@ function renderProfile(u){
   if(!u)return `<div class="empty">Profil introuvable.</div>`;
   const posts=state.posts.filter(p=>p.ownerType!=="page"&&p.ownerId===u.id&&canSeePost(p));
   const photos=posts.filter(p=>["photo","image"].includes(p.mediaType));
-  const reels=posts.filter(p=>p.mediaType==="reel" || p.mediaType==="video");
-  const videos=[];
+  const videos=posts.filter(p=>p.mediaType==="video");
+  const reels=posts.filter(p=>p.mediaType==="reel");
   const friendsList=state.friendships.filter(f=>f.a===u.id||f.b===u.id).map(f=>findUser(f.a===u.id?f.b:f.a)).filter(Boolean);
   const friends=friendsList.length;
   const followers=state.follows.filter(f=>f.to===u.id).length;
@@ -1477,9 +1477,9 @@ function renderProfile(u){
         <article class="about-info-card-v94"><span class="about-icon-v94">🔒</span><div><b>Confidentialité</b><strong>${own?"Vous contrôlez la visibilité de vos informations.":"Selon les réglages de confidentialité de ce profil."}</strong>${own?`<button class="btn secondary about-manage-btn-v94" data-action="editProfile">Gérer les informations</button>`:""}</div></article>
       </div></div>`;
     if(profileTab==="friends") { const shown=profileFriendsAll?friendsList:friendsList.slice(0,8); return `<div class="profile-only-panel premium-about-panel"><div class="profile-section-title"><span>Amis</span><small>${friends}</small></div><div class="profile-friends-grid">${shown.length?shown.map(friendSuggestionPremium).join(""):`<div class="empty-state"><b>Aucun ami</b><span>Ce profil n'a pas encore d'ami affichable.</span></div>`}</div>${friendsList.length>8&&!profileFriendsAll?`<button class="btn secondary friends-view-all-btn" data-action="profileFriendsAll">Voir tout</button>`:""}</div>`; }
-    const list=profileTab==="photos"?photos:profileTab==="reels"?reels:posts;
-    const title=profileTab==="photos"?"Photos":profileTab==="reels"?"Reels":"Publications";
-    const mediaType=profileTab==="photos"?"photo":profileTab==="reels"?"reel":null;
+    const list=profileTab==="photos"?photos:profileTab==="videos"?videos:profileTab==="reels"?reels:posts;
+    const title=profileTab==="photos"?"Photos":profileTab==="videos"?"Vidéos":profileTab==="reels"?"Reels":"Publications";
+    const mediaType=profileTab==="photos"?"photo":profileTab==="videos"?"video":profileTab==="reels"?"reel":null;
     const body=mediaType?renderProfileMediaGrid(list,mediaType):(list.length?list.map(renderPost).join(""):`<div class="empty-state"><b>Aucun contenu</b><span>Les ${title.toLowerCase()} de ce profil apparaîtront ici.</span></div>`);
     return `<div class="profile-only-panel profile-content-panel"><div class="profile-section-title"><span>${title}</span><small>${list.length}</small></div>${body}</div>`;
   })();
@@ -1493,7 +1493,7 @@ function renderProfile(u){
       <div class="profile-actions-premium">${own?`<button class="btn primary profile-main-btn" data-action="createStory">＋ Ajouter une story</button><button class="btn secondary profile-main-btn" data-action="editProfile">✎ Modifier le profil</button><button class="icon-btn profile-refresh-btn" data-action="refreshProfile" data-id="${u.id}" title="Actualiser le profil">↻</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:admin?`<button class="btn primary profile-main-btn" data-action="follow" data-id="${u.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button><button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`:`<button class="btn primary profile-main-btn" data-action="messageUser" data-id="${u.id}">◈ Message</button>${friendActionState(u.id)==="friends"?`<button class="btn secondary profile-main-btn" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`:friendActionState(u.id)==="sent"?`<button class="btn secondary profile-main-btn" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id).id}">Invitation envoyée</button>`:friendActionState(u.id)==="received"?`<button class="btn secondary profile-main-btn" data-action="acceptFriend" data-id="${incomingFriendRequest(u.id).id}">Accepter l'invitation</button>`:`<button class="btn secondary profile-main-btn" data-action="addFriend" data-id="${u.id}">＋ Ajouter</button>`}<button class="icon-btn profile-more-btn" data-action="profileMore" data-id="${u.id}">•••</button>`}</div>
       <div class="profile-stats-premium"><button data-action="profileTab" data-tab="friends"><b>${friends}</b><span>Amis</span></button><div><b>${followers}</b><span>Abonnés</span></div><div><b>${following}</b><span>Suivis</span></div></div>
     </div>
-    <nav class="profile-tabs-premium"><button class="${profileTab==="posts"?"active":""}" data-action="profileTab" data-tab="posts">Publications</button><button class="${profileTab==="photos"?"active":""}" data-action="profileTab" data-tab="photos">Photos</button><button class="${profileTab==="reels"?"active":""}" data-action="profileTab" data-tab="reels">Reels</button><button class="${profileTab==="friends"?"active":""}" data-action="profileTab" data-tab="friends">Amis</button><button class="${profileTab==="about"?"active":""}" data-action="profileTab" data-tab="about">À propos</button></nav>
+    <nav class="profile-tabs-premium"><button class="${profileTab==="posts"?"active":""}" data-action="profileTab" data-tab="posts">Publications</button><button class="${profileTab==="photos"?"active":""}" data-action="profileTab" data-tab="photos">Photos</button><button class="${profileTab==="videos"?"active":""}" data-action="profileTab" data-tab="videos">Vidéos</button><button class="${profileTab==="reels"?"active":""}" data-action="profileTab" data-tab="reels">Reels</button><button class="${profileTab==="friends"?"active":""}" data-action="profileTab" data-tab="friends">Amis</button><button class="${profileTab==="about"?"active":""}" data-action="profileTab" data-tab="about">À propos</button></nav>
     <div class="profile-single-content">${content}</div>
   </section>`;
 }
@@ -1575,13 +1575,13 @@ function renderPageView(id){
   const p=findPage(id);if(!p)return`<div class="empty">Page introuvable.</div>`;
   const posts=state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page"&&canSeePost(x));
   const photos=posts.filter(x=>["photo","image"].includes(x.mediaType));
-  const videos=[];
+  const videos=posts.filter(x=>x.mediaType==="video");
   const reels=posts.filter(x=>x.mediaType==="reel");
   const followers=state.follows.filter(f=>f.to===p.id).length || p.followers || 0;
   const following=state.follows.filter(f=>f.from===p.id).length || 0;
   const own=p.ownerId===state.current;
   const followExists=state.follows.some(f=>f.from===state.current&&f.to===p.id);
-  let list=pageTab==="photos"?photos:pageTab==="reels"?reels:posts;
+  let list=pageTab==="photos"?photos:pageTab==="videos"?videos:pageTab==="reels"?reels:posts;
   let content;
   if(pageTab==="about"){
     content=`<div class="page-only-panel page-about-v90"><div class="profile-section-title"><span>À propos</span><small>Informations de la Page</small></div><div class="page-about-grid-v90">
@@ -1599,8 +1599,8 @@ function renderPageView(id){
   } else if(pageTab==="friends"){
     content=`<div class="page-only-panel page-about-v90"><div class="profile-section-title"><span>Communauté</span><small>${followers} abonnés</small></div><div class="empty-state"><b>Les abonnés de la Page</b><span>La liste des abonnés sera disponible avec les données réelles.</span></div></div>`;
   } else {
-    const title=pageTab==="photos"?"Photos":pageTab==="reels"?"Reels":"Publications";
-    const mediaType=pageTab==="photos"?"photo":pageTab==="reels"?"reel":null;
+    const title=pageTab==="photos"?"Photos":pageTab==="videos"?"Vidéos":pageTab==="reels"?"Reels":"Publications";
+    const mediaType=pageTab==="photos"?"photo":pageTab==="videos"?"video":pageTab==="reels"?"reel":null;
     const body=mediaType?renderProfileMediaGrid(list,mediaType):(list.length?list.map(renderPost).join(""):`<div class="empty-state"><b>Aucun contenu</b><span>Les ${title.toLowerCase()} de cette Page apparaîtront ici.</span></div>`);
     content=`<div class="page-only-panel page-content-v90"><div class="profile-section-title"><span>${title}</span><small>${list.length}</small></div>${body}</div>`;
   }
@@ -1611,7 +1611,7 @@ function renderPageView(id){
       <div class="page-actions-v90">${own?`<button class="btn primary" data-action="openComposer" data-kind="post">＋ Publier</button><button class="btn secondary" data-action="switchPage" data-id="${p.id}">Mode Page</button><button class="icon-btn" data-action="pageMore" data-id="${p.id}">•••</button>`:`<button class="btn primary" data-action="followPage" data-id="${p.id}">${followExists?"✓ Suivi":"＋ Suivre"}</button><button class="btn secondary" data-action="messagePage" data-id="${p.id}">◈ Message</button><button class="icon-btn" data-action="marketMore" data-id="${p.id}">•••</button>`}</div>
       <div class="profile-stats-premium"><div><b>${followers}</b><span>Abonnés</span></div><div><b>${following}</b><span>Suivis</span></div><div><b>${posts.length}</b><span>Publications</span></div></div>
     </div>
-    <nav class="profile-tabs-premium page-tabs-v90"><button class="${pageTab==="posts"?"active":""}" data-action="pageTab" data-tab="posts">Publications</button><button class="${pageTab==="photos"?"active":""}" data-action="pageTab" data-tab="photos">Photos</button><button class="${pageTab==="reels"?"active":""}" data-action="pageTab" data-tab="reels">Reels</button><button class="${pageTab==="about"?"active":""}" data-action="pageTab" data-tab="about">À propos</button></nav>
+    <nav class="profile-tabs-premium page-tabs-v90"><button class="${pageTab==="posts"?"active":""}" data-action="pageTab" data-tab="posts">Publications</button><button class="${pageTab==="photos"?"active":""}" data-action="pageTab" data-tab="photos">Photos</button><button class="${pageTab==="videos"?"active":""}" data-action="pageTab" data-tab="videos">Vidéos</button><button class="${pageTab==="reels"?"active":""}" data-action="pageTab" data-tab="reels">Reels</button><button class="${pageTab==="about"?"active":""}" data-action="pageTab" data-tab="about">À propos</button></nav>
     <div class="profile-single-content">${content}</div>
   </section>`;
 }
@@ -2237,7 +2237,7 @@ async function handleAction(e,el){
   if(a==="comment")return document.querySelector(`[data-comment-form="${id}"] input`)?.focus();
   if(a==="share")return sharePost(id);
   if(a==="save"){const i=state.saved.indexOf(id);if(i>=0)state.saved.splice(i,1);else state.saved.push(id);save();render();return;}
-  if(a==="profileTab"){profileTab=el.dataset.tab||"posts";return render();}
+  if(a==="profileTab"){profileTab=el.dataset.tab||"posts";profileFriendsAll=false;return render();}
   if(a==="pageTab"){pageTab=el.dataset.tab||"posts";return render();}
   if(a==="profile"){profileViewingId=state.current;return routeTo("profile");}
   if(a==="profileStat"){const labels={friends:"amis",followers:"abonnés",following:"suivis"};toast(`${labels[el.dataset.stat]||"statistiques"} : affichage prêt`);return;}
