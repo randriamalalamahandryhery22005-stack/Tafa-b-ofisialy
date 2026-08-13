@@ -3841,3 +3841,78 @@ body.dark .top-actions .menu-action{
   .top-menu-nav .nav-item{min-width:53px!important}
   .post-image-media .post-media{max-height:460px!important}
 }
+
+
+/* =========================================================
+   V1.1.6.10.6 — SINGLE MESSAGE ACTION + SIX PRIMARY SECTIONS
+   - Messages stays only in the upper action area.
+   - Primary navigation: Actualités, Amis, Vidéos, Reels,
+     Marketplace, Notifications.
+   - Consistent, compact page rhythm across all six sections.
+========================================================= */
+.top-menu-nav{
+  grid-template-columns:repeat(6,minmax(0,1fr))!important;
+  overflow:hidden!important;
+}
+.top-menu-nav .nav-item{min-width:0!important}
+
+/* Keep the three upper actions visually unified and never covered. */
+.top-actions{position:relative!important;z-index:30!important;display:flex!important;align-items:center!important;gap:7px!important}
+.top-actions .messages-action,.top-actions .search-action,.top-actions .menu-action{flex:0 0 auto!important}
+
+/* Clean section shells */
+.news-feed-v90,.friends-premium,.media-hub,.marketplace-hub,.notifications-premium{
+  width:min(100%,900px)!important;
+  margin:0 auto!important;
+}
+.news-feed-v90,.friends-premium,.media-hub,.marketplace-hub,.notifications-premium{padding-bottom:24px}
+
+/* Actualités: no unnecessary oversized outer card */
+.news-feed-v90 .news-composer-v90,
+.news-feed-v90 .news-post-stack-v90{width:100%!important}
+.news-post-stack-v90{display:grid!important;gap:14px!important}
+.news-post-stack-v90 .post{margin:0!important}
+
+/* Amis: compact, aligned cards */
+.friends-premium{max-width:900px!important}
+.friends-premium .friend-card,.friends-premium .friends-card,.friends-premium .card{max-width:100%!important}
+
+/* Vidéos / Reels: same shell, different native aspect ratio */
+.media-hub .media-hero{padding:14px 2px 10px!important}
+.media-hub .media-hero h1{font-size:25px!important}
+.media-hub .media-tabs{padding-bottom:9px!important}
+.media-grid{gap:14px!important}
+.media-grid .post{width:100%!important}
+.media-grid .post-video-media{aspect-ratio:16/9!important}
+.media-grid .post-reel-media{width:min(100%,520px)!important;aspect-ratio:9/16!important;margin-inline:auto!important}
+
+/* Marketplace: clean cards without excessive empty framing */
+.marketplace-hub{max-width:900px!important}
+.market-grid-premium{gap:12px!important}
+.market-item-card{overflow:hidden!important}
+.market-item-media{height:auto!important;aspect-ratio:4/3!important}
+.market-item-media img{width:100%!important;height:100%!important;object-fit:contain!important;background:#0a0c10!important}
+
+/* Notifications: compact list, same page width and spacing */
+.notifications-premium{max-width:760px!important}
+.notifications-premium .notification-list,.notifications-premium .notifications-list{display:grid!important;gap:8px!important}
+.notifications-premium .notification-item{margin:0!important;border-radius:16px!important}
+
+/* Images and video in every publication keep their real visual proportion. */
+.post-media-wrap{overflow:hidden!important}
+.post-image-media .post-media{width:100%!important;height:auto!important;object-fit:contain!important}
+.post-video-media .post-media{width:100%!important;height:100%!important;object-fit:contain!important}
+.post-reel-media .post-media{width:100%!important;height:100%!important;object-fit:contain!important}
+
+@media(max-width:780px){
+  .top-menu-nav{grid-template-columns:repeat(6,minmax(0,1fr))!important;overflow:hidden!important}
+  .top-menu-nav .nav-item{min-width:0!important}
+  .nav-glyph,.nav-glyph svg{width:24px!important;height:24px!important}
+  .news-feed-v90,.friends-premium,.media-hub,.marketplace-hub,.notifications-premium{width:100%!important}
+  .media-grid{gap:11px!important}
+  .media-grid .post-reel-media{width:min(100%,430px)!important}
+}
+@media(max-width:390px){
+  .top-menu-nav .nav-item{height:43px!important;min-height:43px!important}
+  .nav-glyph,.nav-glyph svg{width:22px!important;height:22px!important}
+}

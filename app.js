@@ -814,7 +814,6 @@ const countryData = [
 const NAV = [
   ["home","home","Actualités"],
   ["friends","friends","Amis"],
-  ["messages","messages","Messages"],
   ["videos","videos","Vidéos"],
   ["reels","reels","Reels"],
   ["marketplace","marketplace","Marketplace"],
@@ -1092,7 +1091,7 @@ function renderHome(){
   return `<section class="news-feed-v90">
     <div class="feed-refresh-row-v95"><span>Actualités</span><button class="btn secondary" data-action="refreshFeed">↻ Actualiser</button></div>
     <div class="feed-tabs-v1168" role="tablist" aria-label="Fil d’actualités">
-      ${[["all","Tout"],["friends","Amis"],["mine","Mes publications"],["photos","Photos"],["videos","Vidéos"]].map(([key,label])=>`<button type="button" class="feed-tab-v1168 ${feedFilter===key?"active":""}" data-action="feedFilter" data-filter="${key}" role="tab" aria-selected="${feedFilter===key}">${label}</button>`).join("")}
+      ${[["all","Tout"],["friends","Amis"],["mine","Mes publications"],["photos","Photos"]].map(([key,label])=>`<button type="button" class="feed-tab-v1168 ${feedFilter===key?"active":""}" data-action="feedFilter" data-filter="${key}" role="tab" aria-selected="${feedFilter===key}">${label}</button>`).join("")}
     </div>
     <div class="news-composer-v90">
       <button class="news-avatar-button-v90" data-route="profile">${avatar(me(),"avatar lg")}</button>
@@ -1543,10 +1542,10 @@ function renderMedia(type){
   if(mediaFilter==="saved") list=list.filter(p=>state.saved.includes(p.id));
   const q=(window.mediaSearch||"").toLowerCase().trim();
   if(q) list=list.filter(p=>{const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);return `${displayName(o)} ${o?.username||""} ${p.title||""} ${p.text||""}`.toLowerCase().includes(q)});
-  return `${pageBar}<section class="media-hub premium-page"><div class="media-hero"><div><span class="eyebrow">TAFAß · MÉDIA</span><h1>${title}</h1><p>${normalizedType==="video"?"Découvrez les vidéos partagées sur Tafaß.":"Découvrez les Reels courts et immersifs de Tafaß."}</p></div><button class="btn primary" data-action="openComposer" data-kind="${normalizedType}">＋ ${title.slice(0,-1)}</button></div>
+  return `${pageBar}<section class="media-hub premium-page"><div class="media-hero"><div><span class="eyebrow">TAFAß · MÉDIA</span><h1>${title}</h1><p>${normalizedType==="video"?"Découvrez les vidéos partagées sur Tafaß.":"Découvrez les Reels courts et immersifs de Tafaß."}</p></div><button class="btn primary" data-action="openComposer" data-kind="${normalizedType}">＋ ${normalizedType==="video"?"Publier une vidéo":"Publier un Reel"}</button></div>
   <div class="media-search"><span>⌕</span><input id="mediaSearchInput" value="${esc(window.mediaSearch||"")}" placeholder="Rechercher une personne ou une ${normalizedType==="video"?"vidéo":"vidéo"}"><button class="clear-search-premium" data-action="clearMediaSearch" aria-label="Effacer la recherche">Effacer</button></div>
   <div class="media-tabs"><button class="${mediaFilter==="all"?"active":""}" data-action="mediaFilter" data-filter="all">Tout</button><button class="${mediaFilter==="following"?"active":""}" data-action="mediaFilter" data-filter="following">Suivis</button><button class="${mediaFilter==="popular"?"active":""}" data-action="mediaFilter" data-filter="popular">Populaires</button><button class="${mediaFilter==="saved"?"active":""}" data-action="mediaFilter" data-filter="saved">Enregistrés</button></div>
-  <div class="media-grid">${list.length?list.map(renderPost).join(""):`<div class="empty-state media-empty"><div class="empty-icon">${icon}</div><b>Aucun contenu</b><span>Les ${title.toLowerCase()} apparaîtront ici.</span><button class="btn primary" data-action="openComposer" data-kind="${normalizedType}">Publier</button></div>`}</div></section>`;
+  <div class="media-grid">${list.length?list.map(renderPost).join(""):`<div class="empty-state media-empty"><div class="empty-icon">${icon}</div><b>Aucun contenu</b><span>Les ${title.toLowerCase()} apparaîtront ici.</span><button class="btn primary" data-action="openComposer" data-kind="${normalizedType}">${normalizedType==="video"?"Publier une vidéo":"Publier un Reel"}</button></div>`}</div></section>`;
 }
 function renderSaved(){
   const ps=state.posts.filter(p=>state.saved.includes(p.id));
