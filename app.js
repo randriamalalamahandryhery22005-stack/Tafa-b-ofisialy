@@ -814,8 +814,8 @@ const countryData = [
 const NAV = [
   ["home","home","Actualités"],
   ["friends","friends","Amis"],
-  ["messages","messages","Messages"],
   ["videos","videos","Vidéos"],
+  ["reels","reels","Reels"],
   ["marketplace","marketplace","Marketplace"],
   ["notifications","notifications","Notifications"]
 ];
@@ -826,6 +826,7 @@ function navIcon(name){
     friends:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3.5 20c.4-4 2.3-6 5.5-6s5.1 2 5.5 6"/><circle cx="17" cy="9" r="2.2"/><path d="M15.5 14c2.7-.2 4.4 1.5 5 4"/></svg>',
     messages:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v11H9l-5 3v-14Z"/><path d="M8 10h8M8 13h5"/></svg>',
     videos:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="m10 8 6 4-6 4V8Z"/></svg>',
+    reels:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="3"/><path d="m10 8 5 4-5 4V8Z"/><path d="M9 5h6M9 19h6"/></svg>',
     marketplace:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h16v10H4z"/><path d="M3 10 5 5h14l2 5"/><path d="M8 10v3M12 10v3M16 10v3"/></svg>',
     notifications:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 17h12l-1.4-2V10a4.6 4.6 0 0 0-9.2 0v5L6 17Z"/><path d="M10 20h4"/></svg>'
   };
@@ -1031,6 +1032,8 @@ function setupNavigation(){
     const badge = count ? `<em id="${id}Badge" class="badge-count">${count>99?"99+":count}</em>` : id === "messages" ? `<em id="msgBadge" class="badge-count hidden">0</em>` : id === "notifications" ? `<em id="notifBadge" class="badge-count hidden">0</em>` : id === "friends" ? `<em id="friendsBadge" class="badge-count hidden">0</em>` : "";
     return `<button class="nav-item ${route===id?"active":""}" data-route="${id}" title="${label}" aria-label="${label}"><span class="nav-glyph">${navIcon(icon)}</span>${badge}<small class="sr-only">${label}</small></button>`;
   }).join("");
+  const topMsg = $("topMsgBadge");
+  if(topMsg){ const msgCount=unreadMessages(); topMsg.textContent=msgCount>99?"99+":String(msgCount); topMsg.classList.toggle("hidden",!msgCount); }
   const legacy = $("mainNav");
   if(legacy) legacy.innerHTML = "";
 }
@@ -1077,12 +1080,13 @@ function renderRoute(){
   }
 }
 function renderHome(){
-  const feedFilter=window.tafaHomeFeedFilter||"all";
+  const feedFilter=(window.tafaHomeFeedFilter==="videos"?"all":(window.tafaHomeFeedFilter||"all"));
   let posts=[...state.posts].filter(canSeePost);
   if(feedFilter==="friends") posts=posts.filter(p=>p.ownerId===state.current||isFriend(p.ownerId));
   if(feedFilter==="mine") posts=posts.filter(p=>p.ownerId===state.current);
   if(feedFilter==="photos") posts=posts.filter(p=>["photo","image"].includes(String(p.mediaType||"").toLowerCase()));
-  if(feedFilter==="videos") posts=posts.filter(p=>["video","reel"].includes(String(p.mediaType||"").toLowerCase()));
+  // Les vidéos et Reels ont leurs espaces dédiés : ils ne polluent pas le fil Actualités.
+  posts=posts.filter(p=>!["video","reel"].includes(String(p.mediaType||"").toLowerCase()));
   posts.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   return `<section class="news-feed-v90">
     <div class="feed-refresh-row-v95"><span>Actualités</span><button class="btn secondary" data-action="refreshFeed">↻ Actualiser</button></div>
@@ -1120,7 +1124,7 @@ function renderPost(p){
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
   const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
-  const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":""}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`:`<div class="post-media-wrap media-click" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`):"";
+  const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`):"";
   const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
   const deleteButton = p.ownerId===state.current
     ? `<button class="icon-btn post-delete-btn" type="button" title="Supprimer cette publication" aria-label="Supprimer cette publication" data-action="delete-post" data-post-id="${esc(p.id)}">🗑️</button>`
@@ -1481,7 +1485,7 @@ function renderPageView(id){
   const posts=state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page"&&canSeePost(x));
   const photos=posts.filter(x=>["photo","image"].includes(x.mediaType));
   const videos=[];
-  const reels=posts.filter(x=>x.mediaType==="reel" || x.mediaType==="video");
+  const reels=posts.filter(x=>x.mediaType==="reel");
   const followers=state.follows.filter(f=>f.to===p.id).length || p.followers || 0;
   const following=state.follows.filter(f=>f.from===p.id).length || 0;
   const own=p.ownerId===state.current;
