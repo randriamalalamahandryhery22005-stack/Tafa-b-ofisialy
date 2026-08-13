@@ -527,6 +527,19 @@ async function loadSupabasePosts(){
       id:c.id,postId:c.post_id,parentId:c.parent_id,userId:c.user_id,text:(c.text ?? c.content ?? c.body ?? ""),
       createdAt:c.created_at,editedAt:c.edited_at,likes:{}
     }));
+    // V1.1.4 — persistent comment likes
+    const {data:commentLikes,error:commentLikesError}=await SB
+      .from("comment_likes")
+      .select("comment_id,user_id");
+    if(!commentLikesError){
+      (commentLikes||[]).forEach(like=>{
+        const c=state.comments.find(x=>x.id===like.comment_id);
+        if(c){
+          c.likes=c.likes||{};
+          c.likes[like.user_id]=true;
+        }
+      });
+    }
     const commentUserIds=[...new Set((cm||[]).map(c=>c.user_id).filter(Boolean))];
     if(commentUserIds.length){
       const {data:commentProfiles}=await SB.from("profiles").select("*").in("id",commentUserIds);
@@ -987,10 +1000,10 @@ function renderInlineReactionPicker(p){
   const reactions=[["👍","J'aime","blue"],["❤️","J'adore","red"],["🤗","Solidaire","orange"],["😂","Haha","yellow"],["😮","Waouh","yellow"],["😢","Triste","yellow"],["😡","En colère","red"]];
   return `<div class="reaction-picker-v94" data-reaction-picker="${p.id}">${reactions.map(([emoji,label,tone])=>`<button type="button" class="reaction-choice-v94 tone-${tone} ${p.myReaction?.[state.current]===label?"selected":""}" data-action="chooseReaction" data-id="${p.id}" data-reaction="${label}"><span class="reaction-circle-v94">${emoji}</span><b>${label}</b></button>`).join("")}</div>`;
 }
-function renderComment(c,postId,depth=0){
-  const u=findUser(c.userId), replies=state.comments.filter(x=>x.parentId===c.id); if(!u)return"";
-  const liked=c.likes?.[state.current];
-  return `<div class="comment premium-comment" data-comment="${c.id}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p></div><div class="comment-actions"><button data-action="likeComment" data-id="${c.id}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${c.id}">Répondre</button>${u.id===state.current?`<button data-action="editComment" data-id="${c.id}">Modifier</button><button data-action="deleteComment" data-id="${c.id}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replies.length?`<div class="comment-replies">${replies.map(r=>renderComment(r,postId,depth+1)).join("")}</div>`:""}</div></div>`;
+function renderComment(c,postId){
+  const u=findUser(c.userId); if(!u)return"";
+  const liked=!!c.likes?.[state.current];
+  return `<div class="comment premium-comment" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button>${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div></div></div>`;
 }
 function requestSentRow(r){
   const u=findUser(r.to); if(!u)return "";
@@ -1629,7 +1642,7 @@ function bindPageEvents(){
     e.preventDefault();const postId=form.dataset.commentForm,text=form.querySelector("input").value.trim();if(!text)return;
     if(!supabaseReady()||!state.current){toast("Connexion requise");return;}
     try{
-      const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,content:text});
+      const {error}=await SB.from("comments").insert({post_id:postId,user_id:state.current,text:text});
       if(error)throw error;
       await loadSupabasePosts();save();render();toast("Commentaire publié ✓");
     }catch(err){console.error(err);toast("Commentaire impossible : "+(err.message||"erreur Supabase"));}
@@ -1685,7 +1698,6 @@ async function handleAction(e,el){
   if(a==="reportPost"){closeModal();state.reports.push({id:uid("report"),type:"post",targetId:id,userId:state.current,createdAt:new Date().toISOString()});save();return toast("Publication signalée");}
   if(a==="hidePost"){closeModal();state.posts=state.posts.filter(p=>p.id!==id);save();render();return toast("Publication masquée");}
   if(a==="likeComment")return toggleCommentLike(id);
-  if(a==="replyComment")return replyComment(id);
   if(a==="editComment")return editComment(id);
   if(a==="deleteComment")return deleteComment(id);
   if(a==="addFriend")return sendFriend(id);
@@ -1830,7 +1842,30 @@ async function handleAction(e,el){
 
 function profileOwnMenu(){modal("Mon profil",`<div class="premium-options"><button class="menu-card-premium" data-action="viewAs"><span>◉</span><strong>Voir en tant que</strong></button><button class="menu-card-premium" data-action="editProfile"><span>✎</span><strong>Modifier</strong></button><button class="menu-card-premium" data-action="profileStatus"><span>●</span><strong>Statut du profil</strong></button><button class="menu-card-premium" data-action="archive"><span>▣</span><strong>Archive</strong></button><button class="menu-card-premium" data-action="activityHistory"><span>◷</span><strong>Historique d'activité</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${state.current}"><span>🔗</span><strong>Copier le lien du profil</strong></button></div>`);}
 function profileOtherMenu(id){modal("Options du profil",`<div class="premium-options"><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler le profil</strong></button><button class="menu-card-premium" data-action="blockProfile" data-id="${id}"><span>⊘</span><strong>Bloquer</strong></button>${isFriend(id)?`<button class="menu-card-premium" data-action="removeFriend" data-id="${id}"><span>−</span><strong>Retirer</strong></button>`:""}<button class="menu-card-premium" data-action="friendLinks" data-id="${id}"><span>♧</span><strong>Voir les liens d'amitié</strong></button><button class="menu-card-premium" data-action="followPrefs" data-id="${id}"><span>◉</span><strong>Suivre</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien du profil</strong></button></div>`);}
-function toggleCommentLike(id){const c=state.comments.find(x=>x.id===id);if(!c)return;c.likes=c.likes||{};c.likes[state.current]=!c.likes[state.current];save();render();}
+async function toggleCommentLike(id){
+  const c=state.comments.find(x=>x.id===id);
+  if(!c || !supabaseReady() || !state.current) return toast("Connexion requise");
+  const liked=!!c.likes?.[state.current];
+  try{
+    if(liked){
+      const {error}=await SB.from("comment_likes").delete().eq("comment_id",id).eq("user_id",state.current);
+      if(error) throw error;
+      c.likes=c.likes||{};
+      delete c.likes[state.current];
+    }else{
+      const {error}=await SB.from("comment_likes").insert({comment_id:id,user_id:state.current});
+      if(error) throw error;
+      c.likes=c.likes||{};
+      c.likes[state.current]=true;
+    }
+    save();
+    render();
+  }catch(err){
+    console.error("toggleCommentLike:",err);
+    toast("J'aime impossible : "+(err.message||"erreur Supabase"));
+  }
+}
+
 function replyComment(id){
   const c=state.comments.find(x=>x.id===id); if(!c)return;
   modal("Répondre",`<form id="replyForm"><textarea id="replyText" required placeholder="Votre réponse..."></textarea><button class="btn primary wide">Répondre</button></form>`);
@@ -1852,7 +1887,7 @@ function editComment(id){
     e.preventDefault();
     const text=$("editCommentText").value.trim(); if(!text)return;
     try{
-      const {error}=await SB.from("comments").update({content:text,edited_at:new Date().toISOString()}).eq("id",id).eq("user_id",state.current);
+      const {error}=await SB.from("comments").update({text:text,edited_at:new Date().toISOString()}).eq("id",id).eq("user_id",state.current);
       if(error)throw error;
       await loadSupabasePosts();save();closeModal();render();toast("Commentaire modifié ✓");
     }catch(err){console.error(err);toast("Modification impossible : "+(err.message||"erreur Supabase"));}
