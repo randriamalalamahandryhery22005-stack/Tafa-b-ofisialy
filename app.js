@@ -223,7 +223,7 @@ function tafaVideoMarkupV174(post, reel=false){
   return `<div class="${cls}" data-media-kind="${reel?"reel":"video"}"><video src="${esc(post.media_url)}" controls playsinline preload="metadata" class="tafa-native-video-v174" ${reel?'aria-label="Reel"':'aria-label="Vidéo"'}></video></div>`;
 }
 
-function tafaGlobalSearchV173(rawQuery, filter="all"){
+async function tafaGlobalSearchV173(rawQuery, filter="all"){
   const q=String(rawQuery??"").trim();
   if(!q) return {profiles:[],posts:[],marketplace:[]};
   const term=`%${q.replace(/[%_]/g,m=>`\\${m}`)}%`;
@@ -232,7 +232,7 @@ function tafaGlobalSearchV173(rawQuery, filter="all"){
   const wants=(name)=>filter==="all"||filter===name;
 
   if(wants("people")){
-    const r=await supabase.from("profiles")
+    const r=await SB.from("profiles")
       .select("id,username,full_name,first_name,last_name,avatar_url,is_verified,pseudo,location")
       .or(`username.ilike.${term},full_name.ilike.${term},first_name.ilike.${term},last_name.ilike.${term},pseudo.ilike.${term}`)
       .limit(30);
@@ -240,7 +240,7 @@ function tafaGlobalSearchV173(rawQuery, filter="all"){
   }
 
   if(wants("posts")||wants("photos")||wants("videos")||wants("reels")||filter==="all"){
-    const r=await supabase.from("posts")
+    const r=await SB.from("posts")
       .select("id,user_id,content,media_url,media_type,visibility,created_at,updated_at,shares")
       .ilike("content",term)
       .order("created_at",{ascending:false})
@@ -258,7 +258,7 @@ function tafaGlobalSearchV173(rawQuery, filter="all"){
   }
 
   if(wants("marketplace")){
-    const r=await supabase.from("marketplace_listings")
+    const r=await SB.from("marketplace_listings")
       .select("id,owner_id,kind,title,price,description,location,image_url,created_at,updated_at")
       .or(`title.ilike.${term},description.ilike.${term},location.ilike.${term},kind.ilike.${term}`)
       .order("created_at",{ascending:false})
