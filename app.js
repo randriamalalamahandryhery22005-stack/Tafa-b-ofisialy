@@ -624,7 +624,7 @@ async function loadSupabasePosts(){
   state.posts=(data||[]).map(row=>({
     id:row.id, ownerId:row.owner_id || row.user_id, ownerType:"user",
     title:row.title||"Publication", text:row.text ?? row.content ?? "",
-    media:row.media_url||"", mediaType:(row.media_type==="video"?"reel":(row.media_type||"text")),
+    media:row.media_url||"", mediaType:(row.media_type||"text"),
     visibility:visibilityFromDb(row.visibility),
     allowedUsers:[], tags:[],
     createdAt:row.created_at, editedAt:row.edited_at || row.updated_at,
@@ -1517,13 +1517,20 @@ function renderGroups(){
 }
 function renderMedia(type){
   const pageBar=pageContextBar();
-  const isVideo=false; type="reel"; let posts=state.posts.filter(p=>(p.mediaType==="reel"||p.mediaType==="video")&&canSeePost(p));
-  if(mediaFilter==="following")posts=posts.filter(p=>state.follows.some(f=>f.from===state.current&&f.to===p.ownerId)); if(mediaFilter==="popular")posts=[...posts].sort((a,b)=>(b.shares||0)-(a.shares||0)); if(mediaFilter==="saved")posts=posts.filter(p=>state.saved.includes(p.id));
-  const q=(window.mediaSearch||"").toLowerCase().trim(); if(q)posts=posts.filter(p=>{const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);return `${displayName(o)} ${o?.username||""} ${p.title||""} ${p.text||""}`.toLowerCase().includes(q)});
-  return `${pageBar}<section class="media-hub premium-page"><div class="media-hero"><div><h1>Reels</h1></div><button class="btn primary" data-action="openComposer" data-kind="reel">＋</button></div>
-  ${isVideo?`<div class="media-search"><span>⌕</span><input id="mediaSearchInput" value="${esc(window.mediaSearch||"")}" placeholder="Rechercher une personne ou une vidéo"><button class="clear-search-premium" data-action="clearMediaSearch" aria-label="Effacer la recherche">Effacer</button></div>`:""}
+  const normalizedType=type==="video"?"video":"reel";
+  const title=normalizedType==="video"?"Vidéos":"Reels";
+  const icon=normalizedType==="video"?"▶":"◆";
+  const posts=state.posts.filter(p=>p.mediaType===normalizedType&&canSeePost(p));
+  let list=posts;
+  if(mediaFilter==="following") list=list.filter(p=>state.follows.some(f=>f.from===state.current&&f.to===p.ownerId));
+  if(mediaFilter==="popular") list=[...list].sort((a,b)=>(b.shares||0)-(a.shares||0));
+  if(mediaFilter==="saved") list=list.filter(p=>state.saved.includes(p.id));
+  const q=(window.mediaSearch||"").toLowerCase().trim();
+  if(q) list=list.filter(p=>{const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);return `${displayName(o)} ${o?.username||""} ${p.title||""} ${p.text||""}`.toLowerCase().includes(q)});
+  return `${pageBar}<section class="media-hub premium-page"><div class="media-hero"><div><span class="eyebrow">TAFAß · MÉDIA</span><h1>${title}</h1><p>${normalizedType==="video"?"Découvrez les vidéos partagées sur Tafaß.":"Découvrez les Reels courts et immersifs de Tafaß."}</p></div><button class="btn primary" data-action="openComposer" data-kind="${normalizedType}">＋ ${title.slice(0,-1)}</button></div>
+  <div class="media-search"><span>⌕</span><input id="mediaSearchInput" value="${esc(window.mediaSearch||"")}" placeholder="Rechercher une personne ou une ${normalizedType==="video"?"vidéo":"vidéo"}"><button class="clear-search-premium" data-action="clearMediaSearch" aria-label="Effacer la recherche">Effacer</button></div>
   <div class="media-tabs"><button class="${mediaFilter==="all"?"active":""}" data-action="mediaFilter" data-filter="all">Tout</button><button class="${mediaFilter==="following"?"active":""}" data-action="mediaFilter" data-filter="following">Suivis</button><button class="${mediaFilter==="popular"?"active":""}" data-action="mediaFilter" data-filter="popular">Populaires</button><button class="${mediaFilter==="saved"?"active":""}" data-action="mediaFilter" data-filter="saved">Enregistrés</button></div>
-  <div class="media-grid">${posts.length?posts.map(renderPost).join(""):`<div class="empty-state media-empty"><div class="empty-icon">◆</div><b>Aucun contenu</b><button class="btn primary" data-action="openComposer" data-kind="reel">Publier</button></div>`}</div></section>`;
+  <div class="media-grid">${list.length?list.map(renderPost).join(""):`<div class="empty-state media-empty"><div class="empty-icon">${icon}</div><b>Aucun contenu</b><span>Les ${title.toLowerCase()} apparaîtront ici.</span><button class="btn primary" data-action="openComposer" data-kind="${normalizedType}">Publier</button></div>`}</div></section>`;
 }
 function renderSaved(){
   const ps=state.posts.filter(p=>state.saved.includes(p.id));
@@ -1779,11 +1786,11 @@ function openComposer(kind="post"){
   const page=findPage(state.pageMode);
   const publisher=page||me();
   const label=page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
-  const accept=kind==="reel"?"video/*":kind==="photo"?"image/*":"image/*,video/*";
+  const accept=(kind==="reel"||kind==="video")?"video/*":kind==="photo"?"image/*":"image/*,video/*";
   modal(label,`<form id="composerForm" class="premium-form composer-modal-v88">
     <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${page?"PAGE":"COMPTE"}</small></div></div>
     <label>Texte<textarea id="composerText" placeholder="Que voulez-vous partager ?"></textarea></label>
-    <div class="composer-type-grid"><button type="button" class="composer-type-choice ${kind==="post"?"active":""}" data-kind="post">✦ Publication</button><button type="button" class="composer-type-choice ${kind==="photo"?"active":""}" data-kind="photo">▣ Photo</button><button type="button" class="composer-type-choice ${kind==="reel"?"active":""}" data-kind="reel">◆ Reel</button></div>
+    <div class="composer-type-grid"><button type="button" class="composer-type-choice ${kind==="post"?"active":""}" data-kind="post">✦ Publication</button><button type="button" class="composer-type-choice ${kind==="photo"?"active":""}" data-kind="photo">▣ Photo</button><button type="button" class="composer-type-choice ${kind==="video"?"active":""}" data-kind="video">▶ Vidéo</button><button type="button" class="composer-type-choice ${kind==="reel"?"active":""}" data-kind="reel">◆ Reel</button></div>
     <label>Visibilité<select id="composerVisibility"><option>Public</option><option>Amis</option><option>Sélection personnalisée</option><option>Moi uniquement</option></select></label>
     <label>Identifier des amis<input id="composerTags" placeholder="@username, @username"></label>
     <label>Photo / vidéo<input id="composerFile" type="file" accept="${accept}"><div id="composerMediaPreview" class="composer-media-preview hidden"></div><small class="field-help">${kind==="photo"?"Image · 15 Mo max":kind==="video"||kind==="reel"?"Vidéo · 100 Mo max":"Image · 15 Mo / Vidéo · 100 Mo"}</small></label>
@@ -1850,7 +1857,7 @@ function openComposer(kind="post"){
     if(submit){submit.disabled=true;submit.textContent="Publication…";}
     toast("Publication en cours…");
     try{
-      const publishKind=(kind==="video" || (kind==="post" && file && String(file.type||"").toLowerCase().startsWith("video/")))?"reel":kind;
+      const publishKind=(kind==="video"||kind==="reel")?kind:(kind==="post"&&file&&String(file.type||"").toLowerCase().startsWith("video/")?"video":kind);
       const created=await createSupabasePost({text,file,visibility,kind:publishKind});
       const local={
         id:created.id, ownerId:created.user_id, ownerType:"user", title:"Publication",
