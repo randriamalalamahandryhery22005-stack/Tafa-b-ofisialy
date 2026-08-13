@@ -3951,3 +3951,14 @@ body.dark .top-actions .menu-action{
 .notification-card .notification-main{min-width:0;flex:1}
 .notification-card .notification-text{overflow-wrap:anywhere;word-break:break-word}
 .notification-card small{opacity:.65}
+
+/* V1.1.7.3 — advanced search UI */
+.tafa-search-v173{width:100%;display:flex;flex-direction:column;gap:10px}
+.tafa-search-results-v173{display:grid;gap:8px}
+.tafa-search-tabs-v173{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.tafa-search-tabs-v173 button{white-space:nowrap}
+.tafa-search-result-v173{display:flex;align-items:center;gap:10px;min-width:0;padding:10px;border-radius:12px}
+.tafa-search-result-v173 .result-main{min-width:0;flex:1}
+.tafa-search-result-v173 .result-title{font-weight:700;overflow-wrap:anywhere}
+.tafa-search-result-v173 .result-meta{font-size:.82rem;opacity:.68;overflow-wrap:anywhere}
+.tafa-search-empty-v173{text-align:center;padding:24px 12px;opacity:.7}
