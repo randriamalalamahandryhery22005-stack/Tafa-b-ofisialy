@@ -3993,3 +3993,15 @@ body.dark .top-actions .menu-action{
 .tafa-notification-v177 .notification-content{min-width:0;flex:1;overflow-wrap:anywhere}
 .tafa-notification-v177 .notification-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;margin-top:7px}
 .tafa-notification-badge-v177{min-width:18px;height:18px;padding:0 5px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+
+/* V1.1.7.8 — Profil avancé */
+.tafa-profile-v178{width:100%;min-width:0}
+.tafa-profile-cover-v178{width:100%;overflow:hidden;border-radius:0 0 16px 16px}
+.tafa-profile-cover-v178 img{display:block;width:100%;height:auto;max-height:360px;object-fit:cover}
+.tafa-profile-avatar-v178{width:112px;height:112px;border-radius:50%;object-fit:cover;display:block}
+.tafa-profile-main-v178{min-width:0;padding:12px}
+.tafa-profile-name-v178{font-size:1.25rem;font-weight:800;overflow-wrap:anywhere}
+.tafa-profile-bio-v178{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.tafa-profile-info-v178{display:flex;flex-wrap:wrap;gap:8px;font-size:.88rem}
+.tafa-profile-tabs-v178{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding:8px 0}
+.tafa-profile-tabs-v178 button{white-space:nowrap}

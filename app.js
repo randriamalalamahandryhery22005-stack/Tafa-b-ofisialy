@@ -60,6 +60,36 @@ window.tafaNotificationsV177 = window.tafaNotificationsV177 || {
   }
 };
 
+
+/* V1.1.7.8 — Profil avancé, compatible avec le schéma profiles confirmé */
+window.tafaProfileV178 = {
+  fields:["id","username","full_name","first_name","last_name","avatar_url","cover_url",
+          "bio","location","relationship_status","is_verified","created_at","updated_at",
+          "pseudo","privacy","birth","gender","country","phone_code","phone","email"],
+  displayName(p){
+    return String(p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(" ")||p?.username||p?.pseudo||"Utilisateur");
+  },
+  mediaKind(post){
+    const t=String(post?.media_type||"").toLowerCase();
+    if(t.includes("reel")) return "reel";
+    if(t.includes("video")||t==="mp4"||t==="webm"||t==="mov") return "video";
+    if(t.includes("image")||t.includes("photo")) return "photo";
+    return "text";
+  },
+  profilePosts(posts,userId){
+    return (posts||[]).filter(p=>p?.user_id===userId);
+  }
+};
+function tafaProfileTabsV178(posts,userId){
+  const rows=tafaProfileV178.profilePosts(posts,userId);
+  return {
+    publications:rows,
+    photos:rows.filter(p=>tafaProfileV178.mediaKind(p)==="photo"),
+    videos:rows.filter(p=>tafaProfileV178.mediaKind(p)==="video"),
+    reels:rows.filter(p=>tafaProfileV178.mediaKind(p)==="reel")
+  };
+}
+
 function tafaNotificationCountV177(list){
   return (list||[]).filter(n=>n && n.is_read!==true).length;
 }
