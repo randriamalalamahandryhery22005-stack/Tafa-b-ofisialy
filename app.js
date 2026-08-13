@@ -91,9 +91,9 @@ function stopTafaRealtime(){
 }
 async function loadSupabaseNotifications(){
   if(!supabaseReady()||!state.current) return;
-  const {data,error}=await SB.from('notifications').select('*').eq('recipient_id',state.current).order('created_at',{ascending:false}).limit(200);
+  const {data,error}=await SB.from('notifications').select('*').eq('user_id',state.current).order('created_at',{ascending:false}).limit(200);
   if(error){console.warn('Realtime notifications:',error.message);return;}
-  state.notifications=(data||[]).map(n=>({id:n.id,userId:n.recipient_id,type:n.type,text:n.message||n.title||'',entityId:n.entity_id,read:!!n.is_read,createdAt:n.created_at}));
+  state.notifications=(data||[]).map(n=>({id:n.id,userId:n.user_id,type:n.type,text:n.message||'',entityId:n.post_id,read:!!n.is_read,createdAt:n.created_at}));
   save();
 }
 async function refreshRealtimePosts(){ if(realtimeBusy) return; realtimeBusy=true; try{await loadSupabasePosts();save();render();}finally{realtimeBusy=false;} }
@@ -860,7 +860,7 @@ async function notify(userId,type,text,entityId=null){
   if(supabaseReady() && state.current){
     try{
       const {error}=await SB.rpc('tafa_create_notification',{
-        p_recipient_id:userId,p_type:type,p_title:'Tafaß',p_message:text,p_entity_type:'',p_entity_id:entityId
+        p_user_id:userId,p_type:type,p_message:text,p_post_id:entityId
       });
       if(error) throw error;
     }catch(error){
