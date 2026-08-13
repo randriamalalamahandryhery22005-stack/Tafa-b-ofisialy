@@ -26,265 +26,9 @@ const SB = window.supabaseClient;
 let tafaRealtimeChannels=[];
 let realtimeBusy=false;
 let expandedCommentReplies=new Set();
-let expandedCommentTexts=new Set();
 
 // Tafaß V1.1 FINAL — Photo/Video
 // Tafaß V1.1 — robust media type detection (photo/video)
-
-
-/* V1.1.7.3 — schema-correct global search */
-async
-/* V1.1.7.4 — strict Videos/Reels separation + natural media sizing */
-
-/* V1.1.7.5 — Friends advanced helpers, matching existing schema */
-
-/* V1.1.7.6 — Marketplace advanced helpers, matching confirmed schema */
-
-/* V1.1.7.7 — Notifications / Realtime helpers */
-window.tafaNotificationsV177 = window.tafaNotificationsV177 || {
-  seen:new Set(),
-  channel:null,
-  normalize(n){
-    return n ? {
-      id:n.id||null, type:String(n.type||"notification"),
-      user_id:n.user_id||null, actor_id:n.actor_id||null,
-      post_id:n.post_id||null, created_at:n.created_at||null,
-      is_read:n.is_read===true
-    } : null;
-  },
-  merge(list, item){
-    const n=this.normalize(item);
-    if(!n || (n.id && this.seen.has(n.id))) return list||[];
-    if(n.id) this.seen.add(n.id);
-    return [n,...(list||[])];
-  }
-};
-
-
-/* V1.1.7.8 — Profil avancé, compatible avec le schéma profiles confirmé */
-window.tafaProfileV178 = {
-  fields:["id","username","full_name","first_name","last_name","avatar_url","cover_url",
-          "bio","location","relationship_status","is_verified","created_at","updated_at",
-          "pseudo","privacy","birth","gender","country","phone_code","phone","email"],
-  displayName(p){
-    return String(p?.full_name||[p?.first_name,p?.last_name].filter(Boolean).join(" ")||p?.username||p?.pseudo||"Utilisateur");
-  },
-  mediaKind(post){
-    const t=String(post?.media_type||"").toLowerCase();
-    if(t.includes("reel")) return "reel";
-    if(t.includes("video")||t==="mp4"||t==="webm"||t==="mov") return "video";
-    if(t.includes("image")||t.includes("photo")) return "photo";
-    return "text";
-  },
-  profilePosts(posts,userId){
-    return (posts||[]).filter(p=>p?.user_id===userId);
-  }
-};
-
-/* V1.1.7.9 — Pages & Groupes helpers
-   Uses only structures already present in the current frontend.
-   No invented database tables/columns are queried. */
-window.tafaPagesGroupesV179 = {
-  normalize(v){ return String(v ?? "").trim(); },
-  isGroupLike(item){
-    const t=this.normalize(item?.type||item?.kind).toLowerCase();
-    return t.includes("group");
-  },
-  isPageLike(item){
-    const t=this.normalize(item?.type||item?.kind).toLowerCase();
-    return t.includes("page");
-  },
-  searchLocal(items,q){
-    const term=this.normalize(q).toLowerCase();
-    if(!term) return items||[];
-    return (items||[]).filter(x => [
-      x?.name,x?.title,x?.username,x?.pseudo,x?.description,x?.bio
-    ].some(v=>this.normalize(v).toLowerCase().includes(term)));
-  },
-  unique(items){
-    const seen=new Set();
-    return (items||[]).filter(x=>{
-      const k=x?.id ?? JSON.stringify(x);
-      if(seen.has(k)) return false;
-      seen.add(k); return true;
-    });
-  }
-};
-
-/* V1.1.7.10 — frontend safety guards; database RLS remains authoritative */
-window.tafaSecurityV1710 = {
-  currentId(){
-    return state?.current || window.currentUser?.id || window.currentProfile?.id || null;
-  },
-  isOwner(row, field="user_id"){
-    const me=this.currentId();
-    return !!me && !!row && row[field]===me;
-  },
-  isMember(ids){
-    const me=this.currentId();
-    return !!me && Array.isArray(ids) && ids.includes(me);
-  },
-  safeAction(row, field="user_id"){
-    return this.isOwner(row,field);
-  }
-};
-
-function tafaCanEditV1710(row, field="user_id"){
-  return tafaSecurityV1710.isOwner(row,field);
-}
-function tafaCanDeleteV1710(row, field="user_id"){
-  return tafaSecurityV1710.isOwner(row,field);
-}
-
-function tafaPagesGroupesFilterV179(items, kind="all", q=""){
-  const all=tafaPagesGroupesV179.unique(items||[]);
-  const filtered=kind==="all" ? all : all.filter(x=>{
-    const t=String(x?.type||x?.kind||"").toLowerCase();
-    return kind==="pages" ? t.includes("page") : t.includes("group");
-  });
-  return tafaPagesGroupesV179.searchLocal(filtered,q);
-}
-
-function tafaProfileTabsV178(posts,userId){
-  const rows=tafaProfileV178.profilePosts(posts,userId);
-  return {
-    publications:rows,
-    photos:rows.filter(p=>tafaProfileV178.mediaKind(p)==="photo"),
-    videos:rows.filter(p=>tafaProfileV178.mediaKind(p)==="video"),
-    reels:rows.filter(p=>tafaProfileV178.mediaKind(p)==="reel")
-  };
-}
-
-function tafaNotificationCountV177(list){
-  return (list||[]).filter(n=>n && n.is_read!==true).length;
-}
-
-function tafaNotificationUniqueV177(list){
-  const seen=new Set();
-  return (list||[]).filter(n=>{
-    const k=n?.id || [n?.type,n?.actor_id,n?.post_id,n?.created_at].join("|");
-    if(seen.has(k)) return false;
-    seen.add(k); return true;
-  });
-}
-
-function tafaNotificationMarkReadV177(list,id){
-  return (list||[]).map(n=>n?.id===id?{...n,is_read:true}:n);
-}
-
-function tafaMarketplaceNormalizeV176(v){return String(v??"").trim();}
-function tafaMarketplaceMatchesV176(item,q){
-  const x=tafaMarketplaceNormalizeV176(q).toLowerCase();
-  if(!x)return true;
-  return [item?.title,item?.description,item?.location,item?.kind,item?.price]
-    .some(v=>tafaMarketplaceNormalizeV176(v).toLowerCase().includes(x));
-}
-function tafaMarketplaceOwnsV176(item){return !!state.current && item?.owner_id===state.current;}
-function tafaMarketplaceImageV176(item){
-  return item?.image_url?`<img class="tafa-market-image-v176" src="${esc(item.image_url)}" alt="${esc(item.title||"Annonce")}">`:"";
-}
-
-function tafaFriendStatusV175(userId){
-  const me=state.current;
-  if(!me||!userId||me===userId) return "self";
-  const sent=(state.friendRequests||[]).find(r=>r.sender_id===me&&r.receiver_id===userId);
-  const received=(state.friendRequests||[]).find(r=>r.sender_id===userId&&r.receiver_id===me);
-  const friends=(state.friendships||[]).find(r=>
-    (r.requester_id===me&&r.receiver_id===userId) ||
-    (r.requester_id===userId&&r.receiver_id===me)
-  );
-  if(friends) return "friends";
-  if(sent) return "sent";
-  if(received) return "received";
-  return "none";
-}
-function tafaFriendUsersV175(users){
-  return (users||[]).filter(u=>u&&u.id!==state.current);
-}
-
-function tafaMediaKindV174(post){
-  const t=String(post?.media_type||"").toLowerCase().trim();
-  if(t.includes("reel")) return "reel";
-  if(t==="video"||t.includes("video")||t==="mp4"||t==="webm"||t==="mov") return "video";
-  if(t==="image"||t.includes("image")||t.includes("photo")) return "photo";
-  return "text";
-}
-function tafaIsVideoV174(post){return tafaMediaKindV174(post)==="video";}
-function tafaIsReelV174(post){return tafaMediaKindV174(post)==="reel";}
-function tafaMediaMimeV174(post){
-  const t=String(post?.media_type||"").toLowerCase();
-  if(t.includes("webm")) return "video/webm";
-  if(t.includes("ogg")) return "video/ogg";
-  return "video/mp4";
-}
-function tafaVideoMarkupV174(post, reel=false){
-  if(!post?.media_url) return "";
-  const cls=reel?"tafa-reel-video-v174":"tafa-video-v174";
-  return `<div class="${cls}" data-media-kind="${reel?"reel":"video"}"><video src="${esc(post.media_url)}" controls playsinline preload="metadata" class="tafa-native-video-v174" ${reel?'aria-label="Reel"':'aria-label="Vidéo"'}></video></div>`;
-}
-
-async function tafaGlobalSearchV173(rawQuery, filter="all"){
-  const q=String(rawQuery??"").trim();
-  if(!q) return {profiles:[],posts:[],marketplace:[]};
-  const term=`%${q.replace(/[%_]/g,m=>`\\${m}`)}%`;
-  const result={profiles:[],posts:[],marketplace:[]};
-
-  const wants=(name)=>filter==="all"||filter===name;
-
-  if(wants("people")){
-    const r=await SB.from("profiles")
-      .select("id,username,full_name,first_name,last_name,avatar_url,is_verified,pseudo,location")
-      .or(`username.ilike.${term},full_name.ilike.${term},first_name.ilike.${term},last_name.ilike.${term},pseudo.ilike.${term}`)
-      .limit(30);
-    if(!r.error) result.profiles=r.data||[];
-  }
-
-  if(wants("posts")||wants("photos")||wants("videos")||wants("reels")||filter==="all"){
-    const r=await SB.from("posts")
-      .select("id,user_id,content,media_url,media_type,visibility,created_at,updated_at,shares")
-      .ilike("content",term)
-      .order("created_at",{ascending:false})
-      .limit(30);
-    if(!r.error){
-      const rows=r.data||[];
-      result.posts=filter==="all"?rows:rows.filter(p=>{
-        const t=String(p.media_type||"").toLowerCase();
-        if(filter==="photos") return t.includes("image")||t.includes("photo");
-        if(filter==="videos") return t==="video"||t.includes("video");
-        if(filter==="reels") return t==="reel"||t.includes("reel");
-        return true;
-      });
-    }
-  }
-
-  if(wants("marketplace")){
-    const r=await SB.from("marketplace_listings")
-      .select("id,owner_id,kind,title,price,description,location,image_url,created_at,updated_at")
-      .or(`title.ilike.${term},description.ilike.${term},location.ilike.${term},kind.ilike.${term}`)
-      .order("created_at",{ascending:false})
-      .limit(30);
-    if(!r.error) result.marketplace=r.data||[];
-  }
-  return result;
-}
-
-function tafaNotificationLabelV172(n){
-  const t=String(n?.type||"").toLowerCase();
-  if(t.includes("like")||t.includes("reaction")) return "J'aime";
-  if(t.includes("reply")) return "Réponse";
-  if(t.includes("comment")) return "Commentaire";
-  if(t.includes("friend")||t.includes("ami")) return "Amitié";
-  if(t.includes("message")) return "Message";
-  return "Notification";
-}
-function tafaNotificationTargetV172(n){
-  return {
-    postId:n?.post_id||n?.postId||null,
-    commentId:n?.comment_id||n?.commentId||null,
-    actorId:n?.actor_id||n?.actorId||null
-  };
-}
-
 function tafasDetectMediaType(file) {
   if (!file) return null;
   const t = String(file.type || '').toLowerCase();
@@ -1463,7 +1207,7 @@ function renderPost(p){
   if(!canSeePost(p))return"";
   const reactions=p.reactions||{}, count=Object.values(reactions).reduce((a,b)=>a+b,0), mine=p.myReaction?.[state.current]||"";
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
-  const notificationFocus=window.tafaNotificationTarget?.postId===p.id;
+  const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
   const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"></div>`):"";
   const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
@@ -1492,14 +1236,9 @@ function renderComment(c,postId){
   const liked=!!c.likes?.[state.current];
   const replies=state.comments.filter(x=>x.parentId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   const expanded=expandedCommentReplies.has(c.id);
-  const fullText=String(c.text||"");
-  const longText=fullText.length>260;
-  const textExpanded=expandedCommentTexts.has(c.id);
-  const visibleText=longText&&!textExpanded?fullText.slice(0,260).trimEnd()+"…":fullText;
-  const textToggle=longText?`<button data-action="toggleCommentText" data-id="${esc(c.id)}">${textExpanded?"Voir moins":"Voir plus"}</button>`:"";
   const replyHtml=expanded?`<div class="comment-replies-v115">${replies.map(r=>renderComment(r,postId)).join("")}</div>`:"";
   const replyToggle=replies.length?`<button data-action="toggleReplies" data-id="${esc(c.id)}">${expanded?"Masquer":"Voir"} ${replies.length} réponse${replies.length>1?"s":""}</button>`:"";
-  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""} ${window.tafaNotificationTarget?.commentId===c.id?"notification-comment-target":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(visibleText)}</p>${textToggle}${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
+  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""} ${window.tafaNotificationTarget?.commentId===c.id?"notification-comment-target":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
 }
 function requestSentRow(r){
   const u=findUser(r.to); if(!u)return "";
@@ -2353,7 +2092,6 @@ async function handleAction(e,el){
   if(a==="likeComment")return toggleCommentLike(id);
   if(a==="replyComment")return replyComment(id);
   if(a==="toggleReplies")return toggleCommentReplies(id);
-  if(a==="toggleCommentText"){if(expandedCommentTexts.has(id)) expandedCommentTexts.delete(id); else expandedCommentTexts.add(id); return render();}
   if(a==="editComment")return editComment(id);
   if(a==="deleteComment")return deleteComment(id);
   if(a==="addFriend")return sendFriend(id);
@@ -3479,49 +3217,3 @@ document.addEventListener('click', async (event) => {
     button.disabled = false;
   }
 });
-
-
-function tafaNotificationClickV172(el){
-  if(!el) return;
-  const postId=el.dataset.postId||"";
-  const commentId=el.dataset.commentId||"";
-  const actorId=el.dataset.actorId||"";
-  if(postId){
-    window.tafaNotificationTarget={commentId:commentId||null};
-    if(typeof openPost==="function") return openPost(postId);
-    if(typeof navigate==="function") return navigate("actualites",postId);
-  }
-  if(actorId){
-    if(typeof openProfile==="function") return openProfile(actorId);
-    if(typeof navigate==="function") return navigate("profile",actorId);
-  }
-}
-
-function tafaFilterMediaV174(posts, kind){
-  const k=kind==="reels"?"reel":"video";
-  return (posts||[]).filter(p=>tafaMediaKindV174(p)===k);
-}
-
-function tafaFriendSuggestionsV175(users){
-  return tafaFriendUsersV175(users).filter(u=>tafaFriendStatusV175(u.id)==="none");
-}
-
-function tafaMarketplaceFilterV176(items,q=""){
-  return (items||[]).filter(x=>tafaMarketplaceMatchesV176(x,q));
-}
-
-
-/* V1.1.7.11 — lightweight diagnostics / cleanup */
-window.tafaDiagnosticsV1711 = {
-  version:"1.1.7.11",
-  modules:["actualites","amis","recherche","videos","reels","marketplace",
-           "notifications","messages","profil","pages","groupes","security"],
-  check(){
-    const required=["state"];
-    return {
-      ok:required.every(k=>typeof window[k]!=="undefined" || typeof globalThis[k]!=="undefined"),
-      version:this.version,
-      modules:this.modules.slice()
-    };
-  }
-};
