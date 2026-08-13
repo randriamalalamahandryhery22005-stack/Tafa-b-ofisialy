@@ -91,23 +91,14 @@ function stopTafaRealtime(){
 }
 async function loadSupabaseNotifications(){
   if(!supabaseReady()||!state.current) return;
-  // Current Supabase schema: notifications.recipient_id + entity_type/entity_id.
-  const {data,error}=await SB.from('notifications')
-    .select('id,recipient_id,actor_id,type,title,message,entity_type,entity_id,is_read,created_at')
-    .eq('recipient_id',state.current)
-    .order('created_at',{ascending:false})
-    .limit(200);
+  const {data,error}=await SB.from('notifications').select('*').eq('user_id',state.current).order('created_at',{ascending:false}).limit(200);
   if(error){console.warn('Realtime notifications:',error.message);return;}
-  state.notifications=(data||[]).map(n=>{
-    const entityType=n.entity_type||'';
-    const entityId=n.entity_id||null;
-    return {
-      id:n.id,userId:n.recipient_id,type:n.type||'activity',title:n.title||'',text:n.message||'',
-      entityId,postId:entityType==='post'?entityId:null,
-      commentId:entityType==='comment'?entityId:null,
-      actorId:n.actor_id||null,read:!!n.is_read,createdAt:n.created_at
-    };
-  });
+  state.notifications=(data||[]).map(n=>({
+    id:n.id,userId:n.user_id,type:n.type||'activity',text:n.message||'',
+    entityId:n.post_id||n.comment_id||null,postId:n.post_id||null,
+    commentId:n.comment_id||null,actorId:n.actor_id||null,read:!!n.is_read,
+    createdAt:n.created_at
+  }));
   save();
 }
 async function refreshRealtimePosts(){ if(realtimeBusy) return; realtimeBusy=true; try{await loadSupabasePosts();save();render();}finally{realtimeBusy=false;} }
@@ -127,7 +118,7 @@ async function startTafaRealtime(){
     ['comments','comment-change',()=>refreshRealtimePosts()],
     ['friend_requests','friend-request-change',()=>refreshRealtimeFriends()],
     ['friendships','friendship-change',()=>refreshRealtimeFriends()],
-    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render)],
+    ['notifications','notification-change',()=>loadSupabaseNotifications().then(render),`user_id=eq.${uid}`],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)]
   ];
@@ -884,27 +875,33 @@ function modal(title,body,buttons=""){
 function closeModal(){ $("modalRoot").innerHTML=""; }
 async function notify(userId,type,text,entityId=null,commentId=null){
   if(!userId || userId===state.current)return null;
-  const entityType=commentId?'comment':(entityId?'post':'');
-  const localId=crypto.randomUUID();
-  const n={id:localId,userId,type,text,entityId,postId:commentId?null:entityId,commentId,actorId:state.current,read:false,createdAt:new Date().toISOString()};
-  state.notifications.unshift(n); save();
-  if(supabaseReady() && state.current){
+  let actorId=state.current;
+  if(supabaseReady()){
     try{
-      const {data,error}=await SB.rpc('tafa_create_notification',{
-        p_recipient_id:userId,
-        p_type:type,
-        p_title:'Tafaß',
-        p_message:text,
-        p_entity_type:entityType,
-        p_entity_id:commentId||entityId||null
-      });
+      const {data:{user},error:userError}=await SB.auth.getUser();
+      if(userError) throw userError;
+      if(user?.id) actorId=user.id;
+    }catch(e){ console.warn('Notification auth user:',e.message||e); }
+  }
+  const createdAt=new Date().toISOString();
+  const local={id:crypto.randomUUID(),userId,type,text,entityId,postId:entityId,commentId,actorId,read:false,createdAt};
+  if(supabaseReady() && actorId && userId!==actorId){
+    try{
+      const {data,error}=await SB.from('notifications').insert({
+        user_id:userId, actor_id:actorId, type:type||'activity',
+        post_id:entityId||null, comment_id:commentId||null,
+        message:text||'', is_read:false, created_at:createdAt
+      }).select('*').single();
       if(error) throw error;
-      if(data) n.id=data;
+      if(data){
+        local.id=data.id; local.createdAt=data.created_at; local.read=!!data.is_read;
+      }
     }catch(error){
-      console.warn('Notification RPC persist:',error.message||error);
+      console.warn('Notification persist:',error.message||error);
     }
   }
-  return n;
+  state.notifications.unshift(local); save();
+  return local;
 }
 function routeTo(r, options={}){
   const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
@@ -1856,18 +1853,19 @@ async function handleAction(e,el){
   if(a==="markAllRead"){
     state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});
     if(supabaseReady()&&state.current){
-      SB.from('notifications').update({is_read:true}).eq('recipient_id',state.current).eq('is_read',false).then(({error})=>{if(error)console.warn('Notifications markAllRead:',error.message)});
+      SB.from('notifications').update({is_read:true}).eq('user_id',state.current).eq('is_read',false).then(({error})=>{if(error)console.warn('Mark notifications read:',error.message);});
     }
     save();render();return;
   }
   if(a==="clearNotifications"){
-    state.notifications=state.notifications.filter(n=>n.userId!==state.current);
-    if(supabaseReady()&&state.current){
-      SB.from('notifications').delete().eq('recipient_id',state.current).then(({error})=>{if(error)console.warn('Notifications clear:',error.message)});
+    const uid=state.current;
+    state.notifications=state.notifications.filter(n=>n.userId!==uid);
+    if(supabaseReady()&&uid){
+      SB.from('notifications').delete().eq('user_id',uid).then(({error})=>{if(error)console.warn('Clear notifications:',error.message);});
     }
     save();render();return;
   }
-  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true; if(supabaseReady()&&n.id){SB.from('notifications').update({is_read:true}).eq('id',n.id).eq('recipient_id',state.current).then(({error})=>{if(error)console.warn('Notification read:',error.message)});} save();
+  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true; if(supabaseReady()&&n.id){SB.from('notifications').update({is_read:true}).eq('id',n.id).eq('user_id',state.current).then(()=>{}).catch(()=>{});} save();
     if(n.postId||n.commentId){
       window.tafaNotificationTarget={postId:n.postId||null,commentId:n.commentId||null};
       routeTo('home');
