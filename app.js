@@ -971,7 +971,7 @@ function renderPost(p){
     ? `<button class="icon-btn post-delete-btn" type="button" title="Supprimer cette publication" aria-label="Supprimer cette publication" data-action="delete-post" data-post-id="${esc(p.id)}">🗑️</button>`
     : "";
   return `<article class="card post post-premium" data-post="${esc(p.id)}" data-post-id="${esc(p.id)}">
-    <header class="post-head"><button class="post-owner" data-action="${ownerAction}" data-id="${owner.id}">${avatar(owner,"avatar post-avatar")}<span class="post-meta"><strong>${esc(displayName(owner))}</strong><span class="post-badges">${verified(owner)} ${typePill(owner)}</span><small>${timeAgo(p.createdAt)} · ${esc(p.visibility||"Public")}</small></span></button><div class="post-head-actions"><button class="icon-btn post-more" data-action="postMore" data-id="${p.id}" title="Options">•••</button>${deleteButton}</div></header>
+    <header class="post-head"><button class="post-owner" data-action="${ownerAction}" data-id="${owner.id}">${avatar(owner,"avatar post-avatar")}<span class="post-meta"><strong>${esc(displayName(owner))}</strong><span class="post-badges">${verified(owner)} ${typePill(owner)}</span><small>${timeAgo(p.createdAt)}${p.editedAt?` · Modifiée`:""} · ${esc(p.visibility||"Public")}</small></span></button><div class="post-head-actions"><button class="icon-btn post-more" data-action="postMore" data-id="${p.id}" title="Options">•••</button>${deleteButton}</div></header>
     ${p.title?`<h3 class="post-title">${esc(p.title)}</h3>`:""}${p.text?`<div class="post-text">${esc(p.text)}</div>`:""}${mediaHtml}
     <div class="post-stats"><span class="reaction-summary">${count?`✦ ${count}`:""}</span><span>${comments.length} commentaires</span><span>${p.shares||0} partages</span></div>
     ${openReactionPostId===p.id?renderInlineReactionPicker(p):""}
@@ -1916,11 +1916,58 @@ async function sharePost(id){
 }
 
 function editPost(id){
- const p=state.posts.find(x=>x.id===id); if(!p||p.ownerId!==state.current)return;
- modal("Modifier la publication",`<form id="editPostForm" class="premium-form"><label>Texte<textarea id="editPostText">${esc(p.text||"")}</textarea></label><label>Visibilité<select id="editPostVisibility"><option ${p.visibility==="Public"?"selected":""}>Public</option><option ${p.visibility==="Amis"?"selected":""}>Amis</option><option ${p.visibility==="Sélection personnalisée"?"selected":""}>Sélection personnalisée</option><option ${p.visibility==="Moi uniquement"?"selected":""}>Moi uniquement</option></select></label><button class="btn primary wide">Enregistrer</button></form>`);
- $("editPostForm").onsubmit=async e=>{e.preventDefault();p.text=$("editPostText").value.trim();p.visibility=$("editPostVisibility").value;p.editedAt=new Date().toISOString();
-   if(supabaseReady()){const {error}=await SB.from("posts").update({content:p.text,visibility:postVisibilityToDb(p.visibility),updated_at:p.editedAt}).eq("id",p.id).eq("user_id",state.current);if(error)return toast("Modification impossible : "+(error.message||"Supabase"));}
-   save();closeModal();render();toast("Publication modifiée");};
+ const p=state.posts.find(x=>x.id===id);
+ if(!p||p.ownerId!==state.current)return toast("Vous ne pouvez modifier que vos propres publications.");
+
+ const original={text:p.text||"",visibility:p.visibility||"Public",editedAt:p.editedAt||null};
+ modal("Modifier la publication",`<form id="editPostForm" class="premium-form">
+   <label>Texte<textarea id="editPostText" maxlength="5000" required>${esc(original.text)}</textarea></label>
+   <label>Visibilité<select id="editPostVisibility">
+     <option ${original.visibility==="Public"?"selected":""}>Public</option>
+     <option ${original.visibility==="Amis"?"selected":""}>Amis</option>
+     <option ${original.visibility==="Sélection personnalisée"?"selected":""}>Sélection personnalisée</option>
+     <option ${original.visibility==="Moi uniquement"?"selected":""}>Moi uniquement</option>
+   </select></label>
+   <div class="form-actions"><button type="button" class="btn secondary" data-action="closeModal">Annuler</button><button id="editPostSaveBtn" class="btn primary wide" type="submit">Enregistrer les modifications</button></div>
+ </form>`);
+
+ const form=$("editPostForm");
+ if(!form)return;
+ form.onsubmit=async e=>{
+   e.preventDefault();
+   const btn=$("editPostSaveBtn");
+   const text=$("editPostText").value.trim();
+   const visibility=$("editPostVisibility").value;
+   if(!text)return toast("Le texte de la publication ne peut pas être vide.");
+
+   if(btn){btn.disabled=true;btn.textContent="Enregistrement...";}
+   try{
+     const editedAt=new Date().toISOString();
+     if(supabaseReady()){
+       const {error}=await SB.from("posts")
+         .update({
+           content:text,
+           visibility:postVisibilityToDb(visibility),
+           updated_at:editedAt
+         })
+         .eq("id",p.id)
+         .eq("user_id",state.current);
+       if(error)throw error;
+     }
+
+     p.text=text;
+     p.visibility=visibility;
+     p.editedAt=editedAt;
+     save();
+     closeModal();
+     render();
+     toast("Publication modifiée ✓");
+   }catch(error){
+     console.error("Modification publication:",error);
+     if(btn){btn.disabled=false;btn.textContent="Enregistrer les modifications";}
+     toast("Modification impossible : "+(error?.message||"Erreur Supabase"));
+   }
+ };
 }
 function postMore(id){
   const p=state.posts.find(x=>x.id===id); if(!p)return;
