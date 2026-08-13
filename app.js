@@ -39,6 +39,44 @@ async
 /* V1.1.7.5 — Friends advanced helpers, matching existing schema */
 
 /* V1.1.7.6 — Marketplace advanced helpers, matching confirmed schema */
+
+/* V1.1.7.7 — Notifications / Realtime helpers */
+window.tafaNotificationsV177 = window.tafaNotificationsV177 || {
+  seen:new Set(),
+  channel:null,
+  normalize(n){
+    return n ? {
+      id:n.id||null, type:String(n.type||"notification"),
+      user_id:n.user_id||null, actor_id:n.actor_id||null,
+      post_id:n.post_id||null, created_at:n.created_at||null,
+      is_read:n.is_read===true
+    } : null;
+  },
+  merge(list, item){
+    const n=this.normalize(item);
+    if(!n || (n.id && this.seen.has(n.id))) return list||[];
+    if(n.id) this.seen.add(n.id);
+    return [n,...(list||[])];
+  }
+};
+
+function tafaNotificationCountV177(list){
+  return (list||[]).filter(n=>n && n.is_read!==true).length;
+}
+
+function tafaNotificationUniqueV177(list){
+  const seen=new Set();
+  return (list||[]).filter(n=>{
+    const k=n?.id || [n?.type,n?.actor_id,n?.post_id,n?.created_at].join("|");
+    if(seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+}
+
+function tafaNotificationMarkReadV177(list,id){
+  return (list||[]).map(n=>n?.id===id?{...n,is_read:true}:n);
+}
+
 function tafaMarketplaceNormalizeV176(v){return String(v??"").trim();}
 function tafaMarketplaceMatchesV176(item,q){
   const x=tafaMarketplaceNormalizeV176(q).toLowerCase();
