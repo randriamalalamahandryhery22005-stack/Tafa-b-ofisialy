@@ -91,14 +91,23 @@ function stopTafaRealtime(){
 }
 async function loadSupabaseNotifications(){
   if(!supabaseReady()||!state.current) return;
-  const {data,error}=await SB.from('notifications').select('*').eq('user_id',state.current).order('created_at',{ascending:false}).limit(200);
+  // Current Supabase schema: notifications.recipient_id + entity_type/entity_id.
+  const {data,error}=await SB.from('notifications')
+    .select('id,recipient_id,actor_id,type,title,message,entity_type,entity_id,is_read,created_at')
+    .eq('recipient_id',state.current)
+    .order('created_at',{ascending:false})
+    .limit(200);
   if(error){console.warn('Realtime notifications:',error.message);return;}
-  state.notifications=(data||[]).map(n=>({
-    id:n.id,userId:n.user_id,type:n.type||'activity',text:n.message||'',
-    entityId:n.post_id||n.comment_id||null,postId:n.post_id||null,
-    commentId:n.comment_id||null,actorId:n.actor_id||null,read:!!n.is_read,
-    createdAt:n.created_at
-  }));
+  state.notifications=(data||[]).map(n=>{
+    const entityType=n.entity_type||'';
+    const entityId=n.entity_id||null;
+    return {
+      id:n.id,userId:n.recipient_id,type:n.type||'activity',title:n.title||'',text:n.message||'',
+      entityId,postId:entityType==='post'?entityId:null,
+      commentId:entityType==='comment'?entityId:null,
+      actorId:n.actor_id||null,read:!!n.is_read,createdAt:n.created_at
+    };
+  });
   save();
 }
 async function refreshRealtimePosts(){ if(realtimeBusy) return; realtimeBusy=true; try{await loadSupabasePosts();save();render();}finally{realtimeBusy=false;} }
@@ -875,14 +884,22 @@ function modal(title,body,buttons=""){
 function closeModal(){ $("modalRoot").innerHTML=""; }
 async function notify(userId,type,text,entityId=null,commentId=null){
   if(!userId || userId===state.current)return null;
-  const n={id:crypto.randomUUID(),userId,type,text,entityId,postId:entityId,commentId,read:false,createdAt:new Date().toISOString()};
+  const entityType=commentId?'comment':(entityId?'post':'');
+  const localId=crypto.randomUUID();
+  const n={id:localId,userId,type,text,entityId,postId:commentId?null:entityId,commentId,actorId:state.current,read:false,createdAt:new Date().toISOString()};
   state.notifications.unshift(n); save();
   if(supabaseReady() && state.current){
     try{
-      const {error}=await SB.rpc('tafa_create_notification',{
-        p_user_id:userId,p_type:type,p_message:text,p_post_id:entityId,p_comment_id:commentId
+      const {data,error}=await SB.rpc('tafa_create_notification',{
+        p_recipient_id:userId,
+        p_type:type,
+        p_title:'Tafaß',
+        p_message:text,
+        p_entity_type:entityType,
+        p_entity_id:commentId||entityId||null
       });
       if(error) throw error;
+      if(data) n.id=data;
     }catch(error){
       console.warn('Notification RPC persist:',error.message||error);
     }
@@ -1836,9 +1853,21 @@ async function handleAction(e,el){
   if(a==="clearSearches"){state.searches=[];save();render();return;}
   if(a==="useSearch"){$("globalSearch").value=el.dataset.q;routeTo("search");return;}
   if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
-  if(a==="markAllRead"){state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});save();render();return;}
-  if(a==="clearNotifications"){state.notifications=state.notifications.filter(n=>n.userId!==state.current);save();render();return;}
-  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true; if(supabaseReady()&&n.id){SB.from('notifications').update({is_read:true}).eq('id',n.id).eq('user_id',state.current).then(()=>{}).catch(()=>{});} save();
+  if(a==="markAllRead"){
+    state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});
+    if(supabaseReady()&&state.current){
+      SB.from('notifications').update({is_read:true}).eq('recipient_id',state.current).eq('is_read',false).then(({error})=>{if(error)console.warn('Notifications markAllRead:',error.message)});
+    }
+    save();render();return;
+  }
+  if(a==="clearNotifications"){
+    state.notifications=state.notifications.filter(n=>n.userId!==state.current);
+    if(supabaseReady()&&state.current){
+      SB.from('notifications').delete().eq('recipient_id',state.current).then(({error})=>{if(error)console.warn('Notifications clear:',error.message)});
+    }
+    save();render();return;
+  }
+  if(a==="readNotif"){const n=state.notifications.find(x=>x.id===id);if(n){n.read=true; if(supabaseReady()&&n.id){SB.from('notifications').update({is_read:true}).eq('id',n.id).eq('recipient_id',state.current).then(({error})=>{if(error)console.warn('Notification read:',error.message)});} save();
     if(n.postId||n.commentId){
       window.tafaNotificationTarget={postId:n.postId||null,commentId:n.commentId||null};
       routeTo('home');
