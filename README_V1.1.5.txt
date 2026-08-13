@@ -13,3 +13,6 @@ Ajouts:
 À exécuter dans Supabase SQL Editor:
 1) COMMENTS_V1.1.4.sql si ce n'est pas déjà fait
 2) COMMENTS_V1.1.5.sql
+
+
+FIX V1.1.5.1: Si Supabase affiche "null value in column content", exécutez COMMENTS_V1.1.5.sql. Le frontend utilise désormais la colonne content pour créer/modifier les commentaires et réponses.

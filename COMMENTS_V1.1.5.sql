@@ -1,9 +1,19 @@
 -- ============================================================
--- TAFAß V1.1.5 — RÉPONSES AUX COMMENTAIRES
--- À exécuter après COMMENTS_V1.1.4.sql / schéma principal.
+-- TAFAß V1.1.5.1 — FIX COMMENT CONTENT COLUMN
+-- Correction for databases where public.comments.content is NOT NULL.
+-- The frontend now writes to content (not text).
 -- ============================================================
 
--- parent_id doit référencer un commentaire du même post.
+-- Ensure content exists and is populated from legacy columns when possible.
+alter table public.comments add column if not exists content text;
+
+update public.comments
+set content = coalesce(nullif(content, ''), nullif(text, ''), nullif(body, ''), '')
+where content is null or content = '';
+
+alter table public.comments alter column content set not null;
+
+-- Parent validation: a reply must belong to the same publication.
 create or replace function public.tafa_validate_comment_parent()
 returns trigger
 language plpgsql
@@ -27,7 +37,7 @@ create trigger trg_tafa_validate_comment_parent
 before insert or update of parent_id, post_id on public.comments
 for each row execute function public.tafa_validate_comment_parent();
 
--- Notification serveur : commentaire ou réponse.
+-- Server notification for comments/replies.
 create or replace function public.tafa_notify_new_comment()
 returns trigger
 language plpgsql
@@ -42,7 +52,6 @@ begin
   select p.owner_id into v_recipient
   from public.posts p where p.id = new.post_id;
 
-  -- Pour une réponse, notifier d'abord l'auteur du commentaire parent.
   if new.parent_id is not null then
     select c.user_id into v_recipient
     from public.comments c where c.id = new.parent_id;
@@ -84,7 +93,6 @@ create trigger trg_tafa_new_comment_notification
 after insert on public.comments
 for each row execute function public.tafa_notify_new_comment();
 
--- Realtime / indexes (safe if already enabled).
 create index if not exists comments_parent_created_idx
 on public.comments(parent_id, created_at asc);
 
@@ -95,4 +103,4 @@ exception when duplicate_object then null;
 end $$;
 
 notify pgrst, 'reload schema';
-select 'TAFA V1.1.5 — réponses OK' as status;
+select 'TAFA V1.1.5.1 — content FIX OK' as status;
