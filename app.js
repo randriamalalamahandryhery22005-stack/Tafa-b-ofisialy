@@ -39,6 +39,50 @@ function tafasDetectMediaType(file) {
   return null;
 }
 
+// Tafaß V1.1.1 — Delete publication safely.
+// Deletes the Storage object first (when media exists), then the DB row.
+// The DB delete is restricted by the existing RLS policy to the owner.
+async function tafasDeletePublication(post) {
+  if (!post || !post.id) throw new Error('Publication invalide.');
+  if (!window.supabaseClient) throw new Error('Supabase non disponible.');
+
+  const client = window.supabaseClient;
+
+  const { data: { user }, error: userError } = await client.auth.getUser();
+  if (userError) throw userError;
+  if (!user) throw new Error('Vous devez être connecté.');
+  if (post.user_id && post.user_id !== user.id) {
+    throw new Error('Vous ne pouvez supprimer que vos propres publications.');
+  }
+
+  // Remove media from Storage when the post has one.
+  if (post.media_url) {
+    try {
+      const url = String(post.media_url);
+      const marker = '/storage/v1/object/public/posts/';
+      const signedMarker = '/storage/v1/object/sign/posts/';
+      let path = null;
+
+      if (url.includes(marker)) path = decodeURIComponent(url.split(marker)[1].split('?')[0]);
+      else if (url.includes(signedMarker)) path = decodeURIComponent(url.split(signedMarker)[1].split('?')[0]);
+
+      if (path) {
+        const { error: storageError } = await client.storage.from('posts').remove([path]);
+        if (storageError) console.warn('Storage media non supprimé:', storageError);
+      }
+    } catch (e) {
+      console.warn('Impossible de déterminer le chemin Storage:', e);
+    }
+  }
+
+  const { error: deleteError } = await client.from('posts').delete().eq('id', post.id);
+  if (deleteError) throw deleteError;
+
+  return true;
+}
+
+
+
 function stopTafaRealtime(){
   if(!supabaseReady()) return;
   tafaRealtimeChannels.forEach(ch=>{try{SB.removeChannel(ch)}catch(e){}});
@@ -2453,3 +2497,62 @@ async function createAccount(){
 window.addEventListener("error",e=>{console.error(e.error||e.message);if($("splash")){$("splash").classList.add("hide");$("authScreen").classList.remove("hidden");}});
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();
 })();
+
+
+// Delete button handler (delegated, so it also works for dynamically rendered feed items).
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-action="delete-post"]');
+  if (!button) return;
+
+  const postId = button.dataset.postId;
+  if (!postId) return;
+
+  if (!confirm('Supprimer cette publication ? Cette action est irréversible.')) return;
+
+  button.disabled = true;
+  try {
+    let post = null;
+
+    // Prefer an existing in-memory post list when available.
+    const candidates = [
+      window.posts,
+      window.currentPosts,
+      window.feedPosts,
+      window.allPosts
+    ];
+    for (const list of candidates) {
+      if (Array.isArray(list)) {
+        post = list.find(p => String(p.id) === String(postId));
+        if (post) break;
+      }
+    }
+
+    // Fallback: fetch only the selected post.
+    if (!post) {
+      const client = window.supabaseClient;
+      const { data, error } = await client.from('posts').select('*').eq('id', postId).single();
+      if (error) throw error;
+      post = data;
+    }
+
+    await tafasDeletePublication(post);
+
+    const card = button.closest('[data-post-id], article, .post-card, .post');
+    if (card) card.remove();
+
+    // Refresh if the existing app exposes a feed loader.
+    const refresh =
+      window.loadPosts ||
+      window.fetchPosts ||
+      window.renderPosts ||
+      window.loadFeed;
+    if (typeof refresh === 'function') {
+      try { await refresh(); } catch (e) { console.warn('Feed refresh:', e); }
+    }
+  } catch (error) {
+    console.error('Delete publication:', error);
+    alert(error?.message || 'Tsy voafafa ilay publication.');
+  } finally {
+    button.disabled = false;
+  }
+});
