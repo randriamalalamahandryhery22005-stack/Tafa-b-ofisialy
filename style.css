@@ -4005,3 +4005,14 @@ body.dark .top-actions .menu-action{
 .tafa-profile-info-v178{display:flex;flex-wrap:wrap;gap:8px;font-size:.88rem}
 .tafa-profile-tabs-v178{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding:8px 0}
 .tafa-profile-tabs-v178 button{white-space:nowrap}
+
+/* V1.1.7.9 — Pages & Groupes responsive UI */
+.tafa-pages-groupes-v179{width:100%;min-width:0;display:grid;gap:10px}
+.tafa-pages-groupes-tabs-v179{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.tafa-pages-groupes-tabs-v179 button{white-space:nowrap}
+.tafa-page-group-card-v179{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:10px;border-radius:14px}
+.tafa-page-group-card-v179 .main{min-width:0;flex:1}
+.tafa-page-group-card-v179 .title{font-weight:800;overflow-wrap:anywhere}
+.tafa-page-group-card-v179 .description{overflow-wrap:anywhere;word-break:break-word}
+.tafa-page-group-card-v179 .meta{font-size:.82rem;opacity:.68;overflow-wrap:anywhere}
+.tafa-page-group-card-v179 .actions{display:flex;flex-wrap:wrap;gap:6px}

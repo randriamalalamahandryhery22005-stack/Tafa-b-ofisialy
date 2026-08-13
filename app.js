@@ -80,6 +80,45 @@ window.tafaProfileV178 = {
     return (posts||[]).filter(p=>p?.user_id===userId);
   }
 };
+
+/* V1.1.7.9 — Pages & Groupes helpers
+   Uses only structures already present in the current frontend.
+   No invented database tables/columns are queried. */
+window.tafaPagesGroupesV179 = {
+  normalize(v){ return String(v ?? "").trim(); },
+  isGroupLike(item){
+    const t=this.normalize(item?.type||item?.kind).toLowerCase();
+    return t.includes("group");
+  },
+  isPageLike(item){
+    const t=this.normalize(item?.type||item?.kind).toLowerCase();
+    return t.includes("page");
+  },
+  searchLocal(items,q){
+    const term=this.normalize(q).toLowerCase();
+    if(!term) return items||[];
+    return (items||[]).filter(x => [
+      x?.name,x?.title,x?.username,x?.pseudo,x?.description,x?.bio
+    ].some(v=>this.normalize(v).toLowerCase().includes(term)));
+  },
+  unique(items){
+    const seen=new Set();
+    return (items||[]).filter(x=>{
+      const k=x?.id ?? JSON.stringify(x);
+      if(seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+  }
+};
+function tafaPagesGroupesFilterV179(items, kind="all", q=""){
+  const all=tafaPagesGroupesV179.unique(items||[]);
+  const filtered=kind==="all" ? all : all.filter(x=>{
+    const t=String(x?.type||x?.kind||"").toLowerCase();
+    return kind==="pages" ? t.includes("page") : t.includes("group");
+  });
+  return tafaPagesGroupesV179.searchLocal(filtered,q);
+}
+
 function tafaProfileTabsV178(posts,userId){
   const rows=tafaProfileV178.profilePosts(posts,userId);
   return {
