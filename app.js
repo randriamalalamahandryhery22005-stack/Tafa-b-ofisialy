@@ -145,18 +145,87 @@ async function startTafaRealtime(){
 async function loadSupabaseMessages(){
   if(!supabaseReady()||!state.current) return;
   try{
-    const {data:cs,error:ce}=await SB.from('conversations').select('*').contains('members',[state.current]).order('created_at',{ascending:false});
-    if(ce) throw ce;
-    const convs=(cs||[]).map(c=>({id:c.id,type:c.type||'private',members:c.members||[],name:c.name||'',createdAt:c.created_at}));
-    const ids=convs.map(c=>c.id);
-    state.conversations=convs;
+    // Source de vérité: conversation_members + conversations + messages.
+    // Ne dépend plus uniquement de conversations.members[] afin que
+    // le destinataire retrouve toujours la conversation.
+    const {data:cm,error:cme}=await SB.from('conversation_members')
+      .select('conversation_id')
+      .eq('user_id',state.current);
+    if(cme) throw cme;
+
+    const ids=[...new Set((cm||[]).map(r=>r.conversation_id).filter(Boolean))];
+    let convs=[];
+
     if(ids.length){
-      const {data:ms,error:me}=await SB.from('messages').select('*').in('conversation_id',ids).order('created_at',{ascending:true}).limit(1000);
+      const {data:cs,error:ce}=await SB.from('conversations')
+        .select('id,type,created_at,members')
+        .in('id',ids)
+        .order('created_at',{ascending:false});
+      if(ce) throw ce;
+      convs=(cs||[]).map(c=>({
+        id:c.id,
+        type:c.type||'private',
+        members:Array.isArray(c.members)?c.members:[],
+        name:c.name||'',
+        createdAt:c.created_at
+      }));
+    }
+
+    // Fallback de compatibilité pour les anciennes conversations qui ont
+    // members[] mais dont conversation_members n'a pas encore été synchronisé.
+    const {data:legacyCs,error:legacyErr}=await SB.from('conversations')
+      .select('id,type,created_at,members')
+      .contains('members',[state.current])
+      .order('created_at',{ascending:false});
+    if(!legacyErr){
+      const seen=new Set(convs.map(c=>String(c.id)));
+      (legacyCs||[]).forEach(c=>{
+        if(!seen.has(String(c.id))){
+          convs.push({
+            id:c.id,
+            type:c.type||'private',
+            members:Array.isArray(c.members)?c.members:[],
+            name:c.name||'',
+            createdAt:c.created_at
+          });
+        }
+      });
+    }
+
+    convs.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
+    state.conversations=convs;
+
+    if(convs.length){
+      const conversationIds=convs.map(c=>c.id);
+      const {data:ms,error:me}=await SB.from('messages')
+        .select('*')
+        .in('conversation_id',conversationIds)
+        .order('created_at',{ascending:true})
+        .limit(2000);
       if(me) throw me;
-      state.messages=(ms||[]).map(m=>({id:m.id,conversationId:m.conversation_id,from:m.sender_id,to:m.recipient_id,text:m.text||'',files:[],file:null,read:!!m.is_read,createdAt:m.created_at}));
-    }else state.messages=[];
+
+      state.messages=(ms||[]).map(m=>({
+        id:m.id,
+        conversationId:m.conversation_id,
+        from:m.sender_id,
+        to:m.recipient_id,
+        text:(m.text ?? m.content ?? ''),
+        files:[],
+        file:null,
+        read:!!m.is_read,
+        createdAt:m.created_at,
+        updatedAt:m.updated_at,
+        messageType:m.message_type||'text',
+        mediaUrl:m.media_url||null
+      }));
+    }else{
+      state.messages=[];
+    }
+
     save();
-  }catch(e){console.warn('Supabase messages:',e.message||e)}
+  }catch(e){
+    console.warn('Supabase messages:',e.message||e);
+  }
 }
 async function markConversationRead(conversationId){
   if(!supabaseReady() || !state.current || !conversationId) return;
@@ -2460,15 +2529,30 @@ async function viewStory(id){
 }
 function toggleFollow(id){if(id===state.current)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0)state.follows.splice(i,1);else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});notify(id,"follow",`${displayName(me())} vous suit maintenant.`);}save();render();}
 function togglePageFollow(id){const p=findPage(id);if(!p)return;const i=state.follows.findIndex(f=>f.from===state.current&&f.to===id);if(i>=0){state.follows.splice(i,1);p.followers=Math.max(0,(p.followers||0)-1);}else{state.follows.push({from:state.current,to:id,createdAt:new Date().toISOString()});p.followers=(p.followers||0)+1;notify(p.ownerId,"follow",`${displayName(me())} suit votre Page.`);}save();render();}
-function startConversation(id){
-  let c=state.conversations.find(c=>c.type==="private"&&c.members.includes(state.current)&&c.members.includes(id));
-  if(!c){c={id:crypto.randomUUID(),type:"private",members:[state.current,id],createdAt:new Date().toISOString()};state.conversations.push(c);save();persistConversation(c);}
-  activeConversation=c.id;routeTo("messages");
+async function startConversation(id){
+  if(!state.current || !id || id===state.current) return;
+  let c=state.conversations.find(c=>c.type==="private"&&Array.isArray(c.members)&&c.members.includes(state.current)&&c.members.includes(id));
+  if(!c){
+    c={id:crypto.randomUUID(),type:"private",members:[state.current,id],createdAt:new Date().toISOString()};
+    if(supabaseReady()){
+      try{ await persistConversation(c); }
+      catch(e){ console.error('startConversation:',e); toast('Conversation impossible : '+(e.message||'erreur Supabase')); return; }
+    }
+    state.conversations.push(c); save();
+  }
+  activeConversation=c.id;
+  routeTo("messages");
+  if(supabaseReady()) await loadSupabaseMessages();
+  render();
 }
 function newConversation(){
   const people=state.users.filter(u=>u.id!==state.current).map(u=>`<option value="${u.id}">${esc(displayName(u))} (@${esc(u.username)})</option>`).join("");
   modal("Nouveau message",`<form id="newConvForm"><label>Destinataire<select id="newConvUser" required>${people}</select></label><label>Premier message<textarea id="newConvText"></textarea></label><div class="actions"><button type="button" class="btn secondary" data-action="createGroup">＋ Groupe</button><button class="btn primary">Créer la conversation</button></div></form>`);
-  $("newConvForm").onsubmit=e=>{e.preventDefault();startConversation($("newConvUser").value);setTimeout(()=>{const c=state.conversations.find(c=>c.id===activeConversation);if($("newConvText").value.trim())sendMessage(c.id,$("newConvText").value.trim());closeModal();render();},0);};
+  $("newConvForm").onsubmit=e=>{e.preventDefault();startConversation($("newConvUser").value).then(()=>{
+    const c=state.conversations.find(c=>c.id===activeConversation);
+    if($("newConvText").value.trim() && c) sendMessage(c.id,$("newConvText").value.trim());
+    closeModal(); render();
+  });};
 }
 async function sendMessage(convId,text,fileOrFiles){
   const c=state.conversations.find(x=>x.id===convId);
