@@ -3977,3 +3977,12 @@ body.dark .top-actions .menu-action{
 .tafa-friend-card-v175 .friend-name{font-weight:700;overflow-wrap:anywhere}
 .tafa-friend-card-v175 .friend-meta{font-size:.82rem;opacity:.68}
 .tafa-friend-actions-v175{display:flex;flex-wrap:wrap;gap:6px}
+
+/* V1.1.7.6 — Marketplace advanced UI */
+.tafa-market-card-v176{display:flex;flex-direction:column;gap:10px;overflow:hidden;border-radius:14px}
+.tafa-market-image-v176{display:block;width:100%;height:auto;max-height:420px;object-fit:contain;background:transparent}
+.tafa-market-main-v176{min-width:0}
+.tafa-market-title-v176{font-weight:700;overflow-wrap:anywhere}
+.tafa-market-description-v176{overflow-wrap:anywhere;word-break:break-word}
+.tafa-market-meta-v176{display:flex;flex-wrap:wrap;gap:8px;font-size:.84rem;opacity:.72}
+.tafa-market-actions-v176{display:flex;flex-wrap:wrap;gap:7px}

@@ -37,6 +37,20 @@ async
 /* V1.1.7.4 — strict Videos/Reels separation + natural media sizing */
 
 /* V1.1.7.5 — Friends advanced helpers, matching existing schema */
+
+/* V1.1.7.6 — Marketplace advanced helpers, matching confirmed schema */
+function tafaMarketplaceNormalizeV176(v){return String(v??"").trim();}
+function tafaMarketplaceMatchesV176(item,q){
+  const x=tafaMarketplaceNormalizeV176(q).toLowerCase();
+  if(!x)return true;
+  return [item?.title,item?.description,item?.location,item?.kind,item?.price]
+    .some(v=>tafaMarketplaceNormalizeV176(v).toLowerCase().includes(x));
+}
+function tafaMarketplaceOwnsV176(item){return !!state.current && item?.owner_id===state.current;}
+function tafaMarketplaceImageV176(item){
+  return item?.image_url?`<img class="tafa-market-image-v176" src="${esc(item.image_url)}" alt="${esc(item.title||"Annonce")}">`:"";
+}
+
 function tafaFriendStatusV175(userId){
   const me=state.current;
   if(!me||!userId||me===userId) return "self";
@@ -3357,4 +3371,8 @@ function tafaFilterMediaV174(posts, kind){
 
 function tafaFriendSuggestionsV175(users){
   return tafaFriendUsersV175(users).filter(u=>tafaFriendStatusV175(u.id)==="none");
+}
+
+function tafaMarketplaceFilterV176(items,q=""){
+  return (items||[]).filter(x=>tafaMarketplaceMatchesV176(x,q));
 }
