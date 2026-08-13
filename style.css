@@ -3604,3 +3604,167 @@ body:not(.dark) .top-actions .messages-action{background:#eef1f6;color:#222a38;b
   .post-premium .post-video-media .post-media{aspect-ratio:16/9;max-height:none}
   .composer-type-choice{flex:1 1 calc(50% - 8px)!important}
 }
+
+
+/* ==========================================================
+   TAFAß V1.1.6.10.4 — HEADER + MEDIA NATURAL FORMAT
+   ========================================================== */
+.topbar{
+  grid-template-columns:190px minmax(220px,1fr) auto!important;
+  grid-template-areas:"brand search actions" "nav nav nav"!important;
+  min-height:112px!important;
+  height:auto!important;
+  padding:9px 14px 0!important;
+  gap:0 12px!important;
+  overflow:visible!important;
+}
+.topbar-brand{grid-area:brand;min-width:0}
+.global-search{grid-area:search;width:min(520px,100%);max-width:520px!important;height:42px!important;justify-self:center}
+.top-actions{grid-area:actions;display:flex!important;align-items:center;justify-content:flex-end;gap:7px!important;min-width:max-content;overflow:visible!important}
+.top-actions .search-action,
+.top-actions .messages-action,
+.top-actions .menu-action{
+  display:grid!important;
+  place-items:center!important;
+  position:relative!important;
+  flex:0 0 42px!important;
+  width:42px!important;height:42px!important;
+  padding:0!important;
+  border-radius:13px!important;
+  font-size:22px!important;
+  line-height:1!important;
+  visibility:visible!important;
+  opacity:1!important;
+  z-index:3!important;
+}
+.top-actions .messages-action{font-size:20px!important}
+.top-actions .menu-action{font-size:24px!important;font-weight:900!important}
+body:not(.dark) .top-actions .search-action,
+body:not(.dark) .top-actions .messages-action,
+body:not(.dark) .top-actions .menu-action{
+  background:#eef1f6!important;color:#222a38!important;border-color:#e0e5ec!important;
+}
+body.dark .top-actions .search-action,
+body.dark .top-actions .messages-action,
+body.dark .top-actions .menu-action{
+  background:rgba(255,255,255,.07)!important;color:#f5f7ff!important;border-color:rgba(255,255,255,.10)!important;
+}
+.top-menu-nav{
+  grid-area:nav!important;
+  grid-template-columns:repeat(7,minmax(0,1fr))!important;
+  width:100%!important;
+  height:52px!important;min-height:52px!important;
+  overflow:visible!important;
+  padding:4px 0 0!important;
+  gap:3px!important;
+}
+.top-menu-nav .nav-item{min-width:0!important;overflow:visible!important}
+
+/* Feed media: no artificial tall cards. Images keep their natural ratio. */
+.post-premium .post-media-wrap{
+  width:100%!important;
+  margin-top:10px!important;
+  position:relative!important;
+  background:transparent!important;
+  overflow:hidden!important;
+}
+.post-premium .post-image-media{
+  display:flex!important;
+  justify-content:center!important;
+  align-items:center!important;
+  background:transparent!important;
+}
+.post-premium .post-image-media .post-media{
+  display:block!important;
+  width:100%!important;
+  height:auto!important;
+  max-height:none!important;
+  object-fit:contain!important;
+  border-radius:0!important;
+  background:transparent!important;
+}
+.post-premium .post-video-media{
+  width:100%!important;
+  aspect-ratio:16/9!important;
+  max-height:min(72vh,620px)!important;
+  background:#090b0e!important;
+  display:flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+}
+.post-premium .post-reel-media{
+  width:min(100%,430px)!important;
+  aspect-ratio:9/16!important;
+  max-height:min(78vh,720px)!important;
+  margin-left:auto!important;margin-right:auto!important;
+  background:#090b0e!important;
+}
+.post-premium .post-video-media .post-media,
+.post-premium .post-reel-media .post-media{
+  display:block!important;
+  width:100%!important;height:100%!important;
+  max-height:none!important;
+  object-fit:contain!important;
+  background:#090b0e!important;
+  border-radius:0!important;
+}
+
+/* Composer preview: media itself is the visual element, without a large wrapper. */
+.composer-modal-v88 .composer-media-preview,
+.composer-modal-v88 .composer-media-preview.hidden{
+  margin-top:9px!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  overflow:visible!important;
+}
+.composer-modal-v88 .composer-media-preview img{
+  display:block!important;
+  width:100%!important;
+  height:auto!important;
+  max-height:none!important;
+  object-fit:contain!important;
+  border-radius:12px!important;
+  background:transparent!important;
+}
+.composer-modal-v88 .composer-media-preview video{
+  display:block!important;
+  width:100%!important;
+  max-height:min(70vh,620px)!important;
+  aspect-ratio:auto!important;
+  height:auto!important;
+  object-fit:contain!important;
+  border-radius:12px!important;
+  background:#090b0e!important;
+}
+
+@media(max-width:780px){
+  .topbar{
+    grid-template-columns:74px minmax(0,1fr) auto!important;
+    grid-template-areas:"brand search actions" "nav nav nav"!important;
+    min-height:108px!important;
+    padding:8px 8px 0!important;
+    gap:6px!important;
+  }
+  .global-search{display:none!important}
+  .top-actions{gap:5px!important}
+  .top-actions .search-action,.top-actions .messages-action,.top-actions .menu-action{flex-basis:38px!important;width:38px!important;height:38px!important}
+  .top-actions .search-action{display:grid!important}
+  .top-actions .messages-action{display:grid!important}
+  .top-actions .menu-action{display:grid!important}
+  .top-menu-nav{grid-template-columns:repeat(7,minmax(0,1fr))!important;height:51px!important;min-height:51px!important;gap:2px!important}
+  .top-menu-nav .nav-item{height:45px!important;min-height:45px!important}
+  .nav-glyph,.nav-glyph svg{width:24px!important;height:24px!important}
+  .post-premium .post-reel-media{width:min(100%,390px)!important;max-height:76vh!important}
+}
+@media(max-width:430px){
+  .topbar{grid-template-columns:62px minmax(0,1fr) auto!important}
+  .brand-wordmark{font-size:22px!important}
+  .top-actions .search-action,.top-actions .messages-action,.top-actions .menu-action{width:35px!important;height:35px!important;flex-basis:35px!important}
+  .top-actions .search-action{font-size:20px!important}.top-actions .messages-action{font-size:18px!important}.top-actions .menu-action{font-size:21px!important}
+  .top-menu-nav .nav-item{height:43px!important;min-height:43px!important}
+  .nav-glyph,.nav-glyph svg{width:22px!important;height:22px!important}
+  .post-premium .post-reel-media{width:min(100%,360px)!important}
+}

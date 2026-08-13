@@ -814,6 +814,7 @@ const countryData = [
 const NAV = [
   ["home","home","Actualités"],
   ["friends","friends","Amis"],
+  ["messages","messages","Messages"],
   ["videos","videos","Vidéos"],
   ["reels","reels","Reels"],
   ["marketplace","marketplace","Marketplace"],
