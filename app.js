@@ -1506,8 +1506,8 @@ function renderNotifications(){
   const pageBar=pageContextBar();
   const list=state.notifications.filter(n=>n.userId===state.current).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   const unread=list.filter(n=>!n.read).length;
-  const iconMap={like:'♥',reaction:'✦',comment:'◌',comment_reaction:'♥',reply:'↩',share:'↗',mention:'@',friend:'♧',follow:'＋',message:'✉',group:'◆',page:'▣',badge:'✓',security:'⌁',activity:'•'};
-  const typeMap={like:'J’aime',reaction:'Réaction',comment:'Commentaire',comment_reaction:'Réaction commentaire',reply:'Réponse',share:'Partage',mention:'Mention',friend:'Invitation',follow:'Abonnement',message:'Message',group:'Groupe',page:'Page',badge:'Badge',security:'Sécurité',activity:'Activité'};
+  const iconMap={like:'♥',reaction:'✦',comment:'◌',comment_reaction:'♥',reply:'↩',share:'↗',mention:'@',friend:'♧',friend_request:'♧',friend_request_accepted:'✓',follow:'＋',message:'✉',story_reaction:'◉',story_reply:'↩',marketplace_contact:'🛍',group:'◆',page:'▣',badge:'✓',security:'⌁',activity:'•'};
+  const typeMap={like:'J’aime',reaction:'Réaction',comment:'Commentaire',comment_reaction:'Réaction commentaire',reply:'Réponse',share:'Partage',mention:'Mention',friend:'Invitation',friend_request:'Invitation d’ami',friend_request_accepted:'Invitation acceptée',follow:'Abonnement',message:'Message',story_reaction:'Réaction Story',story_reply:'Réponse Story',marketplace_contact:'Marketplace',group:'Groupe',page:'Page',badge:'Badge',security:'Sécurité',activity:'Activité'};
   return `${pageBar}<section class="notifications-premium">
     <div class="notification-hero"><div><span class="eyebrow">TAFAß</span><h1>Notifications</h1><small>${unread?`${unread} nouvelle${unread>1?'s':''}`:'Tout est à jour'}</small></div><div class="notification-hero-actions"><button class="icon-btn" data-action="markAllRead" title="Tout lire">✓</button><button class="icon-btn" data-action="clearNotifications" title="Effacer">⌫</button></div></div>
     <div class="notification-filter"><span class="active">Toutes</span><span>${unread?'Non lues '+unread:'À jour'}</span></div>
@@ -2147,7 +2147,9 @@ async function handleAction(e,el){
       setTimeout(()=>{const target=n.commentId?document.querySelector(`[data-comment=\"${CSS.escape(n.commentId)}\"]`):(n.postId?document.querySelector(`[data-post=\"${CSS.escape(n.postId)}\"]`):null);target?.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>{window.tafaNotificationTarget=null;},1400);},180);
       return;
     }
-    if(n.actorId && (n.type==='friend'||n.type==='follow'||n.type==='mention')){routeToProfile(n.actorId);return;}
+    if(n.type==='message'){routeTo('messages');return;}
+    if(n.type==='marketplace_contact'){routeTo('marketplace');return;}
+    if(n.actorId && (n.type==='friend'||n.type==='friend_request'||n.type==='friend_request_accepted'||n.type==='follow'||n.type==='mention'||n.type==='story_reaction'||n.type==='story_reply')){routeToProfile(n.actorId);return;}
     render();
   }return;}
   if(a==="newConversation")return newConversation();
@@ -2548,6 +2550,7 @@ async function startMarketplaceConversation(listingId){
     save();
   }
   activeConversation=c.id;
+  if(ownerId!==state.current) await notify(ownerId,'marketplace_contact',`${displayName(me())} souhaite vous contacter à propos de « ${item.title||'votre annonce'} ».`);
   routeTo("messages");
   if(supabaseReady()) await loadSupabaseMessages();
   render();
@@ -2564,6 +2567,7 @@ async function startConversation(id){
     state.conversations.push(c); save();
   }
   activeConversation=c.id;
+  if(ownerId!==state.current) await notify(ownerId,'marketplace_contact',`${displayName(me())} souhaite vous contacter à propos de « ${item.title||'votre annonce'} ».`);
   routeTo("messages");
   if(supabaseReady()) await loadSupabaseMessages();
   render();
