@@ -1,195 +1,308 @@
--- TAFAß V1.1.5.6 — COMMENTS / REPLIES SCHEMA COMPATIBILITY
--- The existing database requires public.comments.text NOT NULL.
--- The frontend therefore writes BOTH text and content.
+-- TAFAß V1.1.5.8 — COMMENTS / REPLIES / LIKES / NOTIFICATIONS FINAL FIX
+-- Canonical existing schema: comments.text NOT NULL, posts.owner_id, notifications.recipient_id.
+-- content is kept only for compatibility with older rows/clients.
 
-ALTER TABLE public.comments
-ADD COLUMN IF NOT EXISTS content text;
+create extension if not exists pgcrypto;
 
-UPDATE public.comments
-SET content = text
-WHERE content IS NULL;
+-- ============================================================
+-- 1. COMMENTS
+-- ============================================================
+alter table public.comments add column if not exists content text;
 
-CREATE OR REPLACE FUNCTION public.tafa_validate_comment_parent()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  IF NEW.parent_id IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM public.comments parent
-    WHERE parent.id = NEW.parent_id
-      AND parent.post_id = NEW.post_id
-  ) THEN
-    RAISE EXCEPTION 'La réponse doit appartenir à la même publication que le commentaire parent.';
-  END IF;
-  RETURN NEW;
-END;
+update public.comments
+set content = text
+where content is null;
+
+update public.comments
+set text = coalesce(nullif(text,''), content, '')
+where text is null or btrim(text) = '';
+
+alter table public.comments alter column text set not null;
+
+alter table public.comments enable row level security;
+grant select, insert, update, delete on public.comments to authenticated;
+
+drop policy if exists "comments_select_authenticated" on public.comments;
+create policy "comments_select_authenticated"
+on public.comments for select to authenticated
+using (true);
+
+drop policy if exists "comments_insert_own" on public.comments;
+create policy "comments_insert_own"
+on public.comments for insert to authenticated
+with check (
+  user_id = auth.uid()
+  and exists (select 1 from public.posts p where p.id = post_id)
+  and (parent_id is null or exists (
+    select 1 from public.comments pc
+    where pc.id = parent_id and pc.post_id = post_id
+  ))
+);
+
+drop policy if exists "comments_update_own" on public.comments;
+create policy "comments_update_own"
+on public.comments for update to authenticated
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
+
+drop policy if exists "comments_delete_own" on public.comments;
+create policy "comments_delete_own"
+on public.comments for delete to authenticated
+using (user_id = auth.uid());
+
+create or replace function public.tafa_sync_comment_text()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.text is null or btrim(new.text) = '' then
+    new.text := coalesce(new.content, '');
+  end if;
+  if new.content is null or btrim(new.content) = '' then
+    new.content := new.text;
+  end if;
+  return new;
+end;
 $$;
 
-DROP TRIGGER IF EXISTS trg_tafa_validate_comment_parent ON public.comments;
-CREATE TRIGGER trg_tafa_validate_comment_parent
-BEFORE INSERT OR UPDATE OF parent_id, post_id
-ON public.comments
-FOR EACH ROW EXECUTE FUNCTION public.tafa_validate_comment_parent();
+drop trigger if exists trg_tafa_sync_comment_text on public.comments;
+create trigger trg_tafa_sync_comment_text
+before insert or update of text, content on public.comments
+for each row execute function public.tafa_sync_comment_text();
 
--- Keep the two possible text columns synchronized.
-CREATE OR REPLACE FUNCTION public.tafa_sync_comment_text()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  IF NEW.text IS NULL OR btrim(NEW.text) = '' THEN
-    NEW.text := COALESCE(NEW.content, '');
-  END IF;
-  IF NEW.content IS NULL OR btrim(NEW.content) = '' THEN
-    NEW.content := NEW.text;
-  END IF;
-  RETURN NEW;
-END;
+create or replace function public.tafa_validate_comment_parent()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.parent_id is not null and not exists (
+    select 1 from public.comments parent
+    where parent.id = new.parent_id and parent.post_id = new.post_id
+  ) then
+    raise exception 'La réponse doit appartenir à la même publication que le commentaire parent.';
+  end if;
+  return new;
+end;
 $$;
 
-DROP TRIGGER IF EXISTS trg_tafa_sync_comment_text ON public.comments;
-CREATE TRIGGER trg_tafa_sync_comment_text
-BEFORE INSERT OR UPDATE OF text, content
-ON public.comments
-FOR EACH ROW EXECUTE FUNCTION public.tafa_sync_comment_text();
+drop trigger if exists trg_tafa_validate_comment_parent on public.comments;
+create trigger trg_tafa_validate_comment_parent
+before insert or update of parent_id, post_id on public.comments
+for each row execute function public.tafa_validate_comment_parent();
 
-CREATE OR REPLACE FUNCTION public.tafa_notify_new_comment()
-RETURNS trigger
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
+-- ============================================================
+-- 2. COMMENT LIKES — explicit RLS + grants
+-- ============================================================
+create table if not exists public.comment_likes (
+  comment_id uuid not null references public.comments(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (comment_id, user_id)
+);
+
+alter table public.comment_likes enable row level security;
+grant select, insert, delete on public.comment_likes to authenticated;
+
+drop policy if exists "comment_likes_select_authenticated" on public.comment_likes;
+drop policy if exists "comment_likes_select" on public.comment_likes;
+create policy "comment_likes_select_authenticated"
+on public.comment_likes for select to authenticated
+using (true);
+
+drop policy if exists "comment_likes_insert_own" on public.comment_likes;
+drop policy if exists "comment_likes_insert" on public.comment_likes;
+create policy "comment_likes_insert_own"
+on public.comment_likes for insert to authenticated
+with check (
+  user_id = auth.uid()
+  and exists (select 1 from public.comments c where c.id = comment_id)
+);
+
+drop policy if exists "comment_likes_delete_own" on public.comment_likes;
+drop policy if exists "comment_likes_delete" on public.comment_likes;
+create policy "comment_likes_delete_own"
+on public.comment_likes for delete to authenticated
+using (user_id = auth.uid());
+
+create index if not exists comment_likes_comment_idx
+on public.comment_likes(comment_id);
+
+-- ============================================================
+-- 3. NOTIFICATIONS — canonical existing schema
+-- ============================================================
+-- Ensure the expected notification table exists if it was not created yet.
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  recipient_id uuid not null references public.profiles(id) on delete cascade,
+  actor_id uuid references public.profiles(id) on delete set null,
+  type text not null default 'activity',
+  title text not null default '',
+  message text not null default '',
+  entity_type text default '',
+  entity_id uuid,
+  is_read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table public.notifications enable row level security;
+grant select, update, delete on public.notifications to authenticated;
+
+drop policy if exists "notifications_select_own" on public.notifications;
+create policy "notifications_select_own"
+on public.notifications for select to authenticated
+using (recipient_id = auth.uid());
+
+drop policy if exists "notifications_update_own" on public.notifications;
+create policy "notifications_update_own"
+on public.notifications for update to authenticated
+using (recipient_id = auth.uid())
+with check (recipient_id = auth.uid());
+
+drop policy if exists "notifications_delete_own" on public.notifications;
+create policy "notifications_delete_own"
+on public.notifications for delete to authenticated
+using (recipient_id = auth.uid());
+
+create index if not exists notifications_recipient_created_idx
+on public.notifications(recipient_id, created_at desc);
+
+-- SECURITY DEFINER: clients never need INSERT permission on notifications.
+create or replace function public.tafa_create_notification(
+  p_recipient_id uuid,
+  p_type text,
+  p_title text,
+  p_message text,
+  p_entity_type text default '',
+  p_entity_id uuid default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_id uuid;
+begin
+  if p_recipient_id is null or p_recipient_id = auth.uid() then
+    return null;
+  end if;
+
+  insert into public.notifications(
+    recipient_id, actor_id, type, title, message,
+    entity_type, entity_id, is_read, created_at
+  )
+  values(
+    p_recipient_id, auth.uid(), coalesce(p_type,'activity'),
+    coalesce(p_title,''), coalesce(p_message,''),
+    coalesce(p_entity_type,''), p_entity_id, false, now()
+  )
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
+grant execute on function public.tafa_create_notification(uuid,text,text,text,text,uuid) to authenticated;
+
+-- ============================================================
+-- 4. AUTOMATIC COMMENT / REPLY NOTIFICATIONS
+-- ============================================================
+create or replace function public.tafa_notify_new_comment()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
   v_recipient uuid;
   v_actor_name text;
   v_message text;
-  v_recipient_col text;
-  v_cols text[] := ARRAY[]::text[];
-  v_vals text[] := ARRAY[]::text[];
-  v_sql text;
-BEGIN
-  -- Determine notification recipient without assuming a specific posts owner column.
-  IF NEW.parent_id IS NULL THEN
-    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='posts' AND column_name='owner_id') THEN
-      EXECUTE 'SELECT owner_id FROM public.posts WHERE id = $1' INTO v_recipient USING NEW.post_id;
-    ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='posts' AND column_name='user_id') THEN
-      EXECUTE 'SELECT user_id FROM public.posts WHERE id = $1' INTO v_recipient USING NEW.post_id;
-    ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='posts' AND column_name='author_id') THEN
-      EXECUTE 'SELECT author_id FROM public.posts WHERE id = $1' INTO v_recipient USING NEW.post_id;
-    END IF;
-  ELSE
-    SELECT c.user_id INTO v_recipient
-    FROM public.comments c WHERE c.id = NEW.parent_id;
-  END IF;
+  v_type text;
+  v_title text;
+  v_entity_type text;
+  v_entity_id uuid;
+begin
+  if new.parent_id is null then
+    -- The actual project schema uses posts.owner_id.
+    select p.owner_id into v_recipient
+    from public.posts p
+    where p.id = new.post_id;
 
-  IF v_recipient IS NULL OR v_recipient = NEW.user_id THEN
-    RETURN NEW;
-  END IF;
+    v_type := 'comment';
+    v_title := 'Nouveau commentaire';
+    v_message := 'a commenté votre publication.';
+    v_entity_type := 'post';
+    v_entity_id := new.post_id;
+  else
+    select c.user_id into v_recipient
+    from public.comments c
+    where c.id = new.parent_id;
 
-  -- Do not let notification-schema differences break comments/replies.
-  -- Detect the recipient column actually present in this installation.
-  SELECT c.column_name INTO v_recipient_col
-  FROM information_schema.columns c
-  WHERE c.table_schema='public'
-    AND c.table_name='notifications'
-    AND c.column_name IN ('recipient_id','user_id','receiver_id','target_user_id')
-  ORDER BY CASE c.column_name
-    WHEN 'recipient_id' THEN 1
-    WHEN 'user_id' THEN 2
-    WHEN 'receiver_id' THEN 3
-    WHEN 'target_user_id' THEN 4
-  END
-  LIMIT 1;
+    v_type := 'reply';
+    v_title := 'Nouvelle réponse';
+    v_message := 'a répondu à votre commentaire.';
+    v_entity_type := 'comment';
+    v_entity_id := new.parent_id;
+  end if;
 
-  -- If this installation has no recipient column, the comment itself must
-  -- still succeed; simply skip persistence of the optional notification.
-  IF v_recipient_col IS NULL THEN
-    RETURN NEW;
-  END IF;
+  if v_recipient is null or v_recipient = new.user_id then
+    return new;
+  end if;
 
-  SELECT trim(concat_ws(' ', pr.first_name, pr.last_name))
-  INTO v_actor_name
-  FROM public.profiles pr WHERE pr.id = NEW.user_id;
+  select trim(concat_ws(' ', p.first_name, p.last_name))
+  into v_actor_name
+  from public.profiles p
+  where p.id = new.user_id;
 
-  v_actor_name := coalesce(nullif(v_actor_name,''),'Un utilisateur');
+  v_actor_name := coalesce(nullif(v_actor_name,''), 'Un utilisateur');
 
-  IF NEW.parent_id IS NULL THEN
-    v_message := v_actor_name || ' a commenté votre publication.';
-  ELSE
-    v_message := v_actor_name || ' a répondu à votre commentaire.';
-  END IF;
+  begin
+    insert into public.notifications(
+      recipient_id, actor_id, type, title, message,
+      entity_type, entity_id, is_read, created_at
+    )
+    values(
+      v_recipient, new.user_id, v_type, v_title,
+      v_actor_name || ' ' || v_message,
+      v_entity_type, v_entity_id, false, now()
+    );
+  exception when others then
+    raise warning 'TAFA notification skipped: %', SQLERRM;
+  end;
 
-  -- Build an INSERT using only columns that exist in the real notifications table.
-  v_cols := ARRAY[v_recipient_col];
-  v_vals := ARRAY['$1'];
-
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='actor_id') THEN
-    v_cols := array_append(v_cols, 'actor_id'); v_vals := array_append(v_vals, '$2');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='type') THEN
-    v_cols := array_append(v_cols, 'type'); v_vals := array_append(v_vals, '$3');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='title') THEN
-    v_cols := array_append(v_cols, 'title'); v_vals := array_append(v_vals, '$4');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='message') THEN
-    v_cols := array_append(v_cols, 'message'); v_vals := array_append(v_vals, '$5');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='entity_type') THEN
-    v_cols := array_append(v_cols, 'entity_type'); v_vals := array_append(v_vals, '$6');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='entity_id') THEN
-    v_cols := array_append(v_cols, 'entity_id'); v_vals := array_append(v_vals, '$7');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='is_read') THEN
-    v_cols := array_append(v_cols, 'is_read'); v_vals := array_append(v_vals, '$8');
-  END IF;
-  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='created_at') THEN
-    v_cols := array_append(v_cols, 'created_at'); v_vals := array_append(v_vals, '$9');
-  END IF;
-
-  v_sql := format(
-    'INSERT INTO public.notifications (%s) VALUES (%s)',
-    array_to_string(ARRAY(SELECT format('%I',x) FROM unnest(v_cols) x), ', '),
-    array_to_string(v_vals, ', ')
-  );
-
-  BEGIN
-    EXECUTE v_sql
-    USING
-      v_recipient,
-      NEW.user_id,
-      CASE WHEN NEW.parent_id IS NULL THEN 'comment' ELSE 'reply' END,
-      CASE WHEN NEW.parent_id IS NULL THEN 'Nouveau commentaire' ELSE 'Nouvelle réponse' END,
-      v_message,
-      CASE WHEN NEW.parent_id IS NULL THEN 'post' ELSE 'comment' END,
-      CASE WHEN NEW.parent_id IS NULL THEN NEW.post_id ELSE NEW.parent_id END,
-      false,
-      now();
-  EXCEPTION WHEN OTHERS THEN
-    -- Notification persistence is secondary; never block comment/reply creation.
-    RAISE WARNING 'TAFA notification skipped: %', SQLERRM;
-  END;
-
-  RETURN NEW;
-END;
+  return new;
+end;
 $$;
 
-DROP TRIGGER IF EXISTS trg_tafa_new_comment_notification ON public.comments;
-CREATE TRIGGER trg_tafa_new_comment_notification
-AFTER INSERT ON public.comments
-FOR EACH ROW EXECUTE FUNCTION public.tafa_notify_new_comment();
+drop trigger if exists trg_tafa_new_comment_notification on public.comments;
+create trigger trg_tafa_new_comment_notification
+after insert on public.comments
+for each row execute function public.tafa_notify_new_comment();
 
-CREATE INDEX IF NOT EXISTS comments_parent_created_idx
-ON public.comments(parent_id, created_at ASC);
+-- ============================================================
+-- 5. REALTIME
+-- ============================================================
+do $$
+begin
+  alter publication supabase_realtime add table public.comments;
+exception when duplicate_object then null;
+end $$;
 
-DO $$
-BEGIN
-  ALTER PUBLICATION supabase_realtime ADD TABLE public.comments;
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
+do $$
+begin
+  alter publication supabase_realtime add table public.comment_likes;
+exception when duplicate_object then null;
+end $$;
 
-NOTIFY pgrst, 'reload schema';
-SELECT 'TAFA V1.1.5.6 — text + content COMPATIBILITY OK' AS status;
+do $$
+begin
+  alter publication supabase_realtime add table public.notifications;
+exception when duplicate_object then null;
+end $$;
+
+notify pgrst, 'reload schema';
+select 'TAFA V1.1.5.8 — COMMENTS + LIKES + NOTIFICATIONS OK' as status;

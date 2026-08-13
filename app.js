@@ -865,16 +865,6 @@ async function notify(userId,type,text,entityId=null){
       if(error) throw error;
     }catch(error){
       console.warn('Notification RPC persist:',error.message||error);
-      // Fallback direct insert for installations where the RPC is stale.
-      try{
-        const {error:insertError}=await SB.from('notifications').insert({
-          recipient_id:userId,actor_id:state.current,type:type||'activity',
-          title:'Tafaß',message:text,entity_type:'',entity_id:entityId,is_read:false
-        });
-        if(insertError) console.warn('Notification direct persist:',insertError.message||insertError);
-      }catch(fallbackError){
-        console.warn('Notification fallback:',fallbackError.message||fallbackError);
-      }
     }
   }
   return n;
