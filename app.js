@@ -228,42 +228,47 @@ async function loadSupabaseProfileById(id){
 async function loadSupabaseFriends(){
   if(!supabaseReady() || !state.current) return;
   try{
-    const [reqRes,shipRes]=await Promise.all([
-      SB.from("friend_requests")
-        .select("id,sender_id,receiver_id,status,created_at,responded_at")
-        .or(`sender_id.eq.${state.current},receiver_id.eq.${state.current}`)
-        .order("created_at",{ascending:false}),
-      SB.from("friendships")
-        .select("id,user_id,friend_id,created_at")
-        .or(`user_id.eq.${state.current},friend_id.eq.${state.current}`)
-        .order("created_at",{ascending:false})
-    ]);
+    // Source de vérité Supabase: friendships.
+    // Le schéma réel de la base est:
+    // id, requester_id, receiver_id, status, created_at, updated_at
+    const {data,error}=await SB.from("friendships")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
+      .or(`requester_id.eq.${state.current},receiver_id.eq.${state.current}`)
+      .order("created_at",{ascending:false});
+    if(error) throw error;
 
-    if(reqRes.error) throw reqRes.error;
-    if(shipRes.error) throw shipRes.error;
+    const rows=data||[];
+    state.friendRequests=rows
+      .filter(r=>r.status!=="accepted")
+      .map(r=>({
+        id:r.id,
+        from:r.requester_id,
+        to:r.receiver_id,
+        status:r.status,
+        createdAt:r.created_at,
+        respondedAt:r.updated_at
+      }));
 
-    state.friendRequests=(reqRes.data||[]).map(r=>({
-      id:r.id, from:r.sender_id, to:r.receiver_id,
-      status:r.status, createdAt:r.created_at, respondedAt:r.responded_at
-    }));
-
-    state.friendships=(shipRes.data||[]).map(f=>({
-      id:f.id, a:f.user_id, b:f.friend_id, createdAt:f.created_at
-    }));
+    state.friendships=rows
+      .filter(r=>r.status==="accepted")
+      .map(r=>({
+        id:r.id,
+        a:r.requester_id,
+        b:r.receiver_id,
+        createdAt:r.created_at,
+        updatedAt:r.updated_at
+      }));
 
     const ids=new Set();
-    state.friendRequests.forEach(r=>{
-      if(r.from!==state.current)ids.add(r.from);
-      if(r.to!==state.current)ids.add(r.to);
-    });
-    state.friendships.forEach(f=>{
-      if(f.a!==state.current)ids.add(f.a);
-      if(f.b!==state.current)ids.add(f.b);
+    rows.forEach(r=>{
+      if(r.requester_id!==state.current) ids.add(r.requester_id);
+      if(r.receiver_id!==state.current) ids.add(r.receiver_id);
     });
 
     if(ids.size){
-      const {data,error}=await SB.from("profiles").select("*").in("id",[...ids]);
-      if(!error) mergeUsersFromProfiles(data||[]);
+      const {data:profiles,error:profileError}=await SB.from("profiles")
+        .select("*").in("id",[...ids]);
+      if(!profileError) mergeUsersFromProfiles(profiles||[]);
     }
 
     save();
@@ -299,15 +304,11 @@ function friendActionState(id){
 }
 
 async function sendFriend(id){
-  if(!supabaseReady()) return toast("Session Supabase introuvable");
-  const {data:{user},error:authError}=await SB.auth.getUser();
-  if(authError || !user?.id) return toast("Session Supabase introuvable");
-  const currentUserId=user.id;
-  state.current=currentUserId;
-  if(!id || id===currentUserId) return;
+  if(!supabaseReady() || !state.current) return toast("Session Supabase introuvable");
+  if(!id || id===state.current) return;
   if(isFriend(id)) return toast("Vous êtes déjà amis.");
 
-  const existing=friendRequestBetween(currentUserId,id);
+  const existing=friendRequestBetween(state.current,id);
   if(existing){
     if(existing.from===id && existing.to===state.current){
       return toast("Cette personne vous a déjà envoyé une invitation.");
@@ -318,27 +319,28 @@ async function sendFriend(id){
   }
 
   try{
-    const {data,error}=await SB.from("friend_requests")
+    // Schéma réel: friendships(requester_id, receiver_id, status, ...)
+    const {data,error}=await SB.from("friendships")
       .insert({
-        sender_id:currentUserId,
+        requester_id:state.current,
         receiver_id:id,
         status:"pending"
       })
-      .select("id,sender_id,receiver_id,status,created_at,responded_at")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
       .single();
 
     if(error) throw error;
 
     state.friendRequests.unshift({
-      id:data.id,from:data.sender_id,to:data.receiver_id,
-      status:data.status,createdAt:data.created_at,respondedAt:data.responded_at
+      id:data.id,
+      from:data.requester_id,
+      to:data.receiver_id,
+      status:data.status,
+      createdAt:data.created_at,
+      respondedAt:data.updated_at
     });
 
-    // Notification locale pour l'utilisateur courant; la notification
-    // persistante côté destinataire sera ajoutée avec le système notifications.
     save();
-    // Notification persistante côté destinataire. L'auth.uid() de la session
-    // courante reste la seule identité utilisée pour l'expéditeur.
     await notify(id,"friend_request",`${displayName(me())} vous a envoyé une invitation d’ami.`);
     render();
     toast("Invitation envoyée.");
@@ -355,31 +357,30 @@ async function acceptFriend(id){
   if(!r || r.to!==state.current || r.status!=="pending") return;
 
   try{
-    const {error:updateError}=await SB.from("friend_requests")
-      .update({status:"accepted",responded_at:new Date().toISOString()})
+    // L'invitation devient directement une amitié dans la même ligne.
+    const {data,error}=await SB.from("friendships")
+      .update({
+        status:"accepted",
+        updated_at:new Date().toISOString()
+      })
       .eq("id",id)
       .eq("receiver_id",state.current)
-      .eq("status","pending");
-    if(updateError) throw updateError;
-
-    // Une seule ligne suffit: elle est visible aux deux côtés via RLS.
-    const {data:friendship,error:friendshipError}=await SB.from("friendships")
-      .insert({user_id:state.current,friend_id:r.from})
-      .select("id,user_id,friend_id,created_at")
+      .eq("status","pending")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
       .single();
-    if(friendshipError && friendshipError.code!=="23505") throw friendshipError;
+
+    if(error) throw error;
 
     r.status="accepted";
-    r.respondedAt=new Date().toISOString();
-
-    if(friendship){
-      state.friendships.push({
-        id:friendship.id,a:friendship.user_id,b:friendship.friend_id,
-        createdAt:friendship.created_at
-      });
-    }else{
-      await loadSupabaseFriends();
-    }
+    r.respondedAt=data.updated_at;
+    state.friendRequests=state.friendRequests.filter(x=>x.id!==id);
+    state.friendships.push({
+      id:data.id,
+      a:data.requester_id,
+      b:data.receiver_id,
+      createdAt:data.created_at,
+      updatedAt:data.updated_at
+    });
 
     save();
     await notify(r.from,"friend_request_accepted",`${displayName(me())} a accepté votre invitation d’ami.`);
@@ -398,14 +399,19 @@ async function declineFriend(id){
 
   try{
     const newStatus=r.from===state.current ? "cancelled" : "declined";
-    const {error}=await SB.from("friend_requests")
-      .update({status:newStatus,responded_at:new Date().toISOString()})
+    const {data,error}=await SB.from("friendships")
+      .update({
+        status:newStatus,
+        updated_at:new Date().toISOString()
+      })
       .eq("id",id)
-      .eq("status","pending");
+      .or(`requester_id.eq.${state.current},receiver_id.eq.${state.current}`)
+      .eq("status","pending")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
+      .single();
     if(error) throw error;
 
-    r.status=newStatus;
-    r.respondedAt=new Date().toISOString();
+    state.friendRequests=state.friendRequests.filter(x=>x.id!==id);
     save();
     render();
     toast(newStatus==="cancelled"?"Invitation annulée.":"Invitation refusée.");
@@ -425,7 +431,8 @@ async function removeFriend(id){
   try{
     const {error}=await SB.from("friendships")
       .delete()
-      .eq("id",f.id);
+      .eq("id",f.id)
+      .or(`requester_id.eq.${state.current},receiver_id.eq.${state.current}`);
     if(error) throw error;
     state.friendships=state.friendships.filter(x=>x.id!==f.id);
     save();
