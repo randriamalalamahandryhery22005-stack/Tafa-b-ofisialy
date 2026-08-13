@@ -875,8 +875,8 @@ function localizeApp(){
 
 const MENU_ITEMS = [
 ["profile","◯","Profil"],["friends","♧","Amis"],["messages","▣","Messages"],
-["notifications","♢","Notifications"],["pages","▤","Pages"],["groups","◉","Groupes"],
-["saved","🔖","Enregistrés"],["reels","◆","Reels"],["events","◫","Événements"],
+["videos","▶","Vidéos"],["reels","◆","Reels"],["notifications","♢","Notifications"],["pages","▤","Pages"],["groups","◉","Groupes"],
+["saved","🔖","Enregistrés"],["events","◫","Événements"],
 ["settings","⚙","Paramètres"],["privacy","◌","Confidentialité"],["security","🔒","Sécurité"],
 ["accounts","◎","Comptes"],["language","文","Langue"],["accessibility","♿","Accessibilité"],
 ["devices","▣","Appareils"],["payments","◇","Paiements"],["badge","✓","Badge bleu"],
