@@ -1,0 +1,27 @@
+TAFA V1.1.7.11 — TESTS & CLEANUP FINAL
+
+Base:
+V1.1.7.10 — Sécurité & Permissions
+
+Modules à tester manuellement:
+1. Splash / connexion / inscription
+2. Actualités: publication, story, réactions, commentaires
+3. Amis: invitation reçue/envoyée, accepter/refuser, suggestions
+4. Recherche: comptes, pages/groupes, publications, vidéos/photos
+5. Vidéos: lecture, controls, ratio original
+6. Reels: lecture, séparation avec Vidéos
+7. Marketplace: publier, rechercher, détail, contacter vendeur
+8. Notifications: badge, lecture, navigation, absence de doublons
+9. Messages: conversation, envoi/réception, pièces jointes si disponibles
+10. Profil: avatar, cover, informations, publications/photos/vidéos/reels
+11. Pages / Groupes: filtres et recherche
+12. Sécurité: actions propriétaire et accès non autorisés
+13. Mobile: aucun débordement horizontal, boutons accessibles
+14. Rechargement: données conservées après refresh
+
+Cleanup effectué:
+- normalisation des fins de ligne;
+- suppression des espaces en fin de ligne;
+- ajout d'un diagnostic frontend non destructif.
+
+Aucun changement SQL, aucune nouvelle table/colonne et aucune désactivation RLS.
