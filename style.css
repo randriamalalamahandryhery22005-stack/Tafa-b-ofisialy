@@ -3962,3 +3962,10 @@ body.dark .top-actions .menu-action{
 .tafa-search-result-v173 .result-title{font-weight:700;overflow-wrap:anywhere}
 .tafa-search-result-v173 .result-meta{font-size:.82rem;opacity:.68;overflow-wrap:anywhere}
 .tafa-search-empty-v173{text-align:center;padding:24px 12px;opacity:.7}
+
+/* V1.1.7.4 — media display: no forced crop, natural aspect ratio */
+.tafa-video-v174,.tafa-reel-video-v174{width:100%;display:flex;justify-content:center;align-items:center;overflow:hidden;background:transparent}
+.tafa-native-video-v174{display:block;width:100%;height:auto;max-width:100%;object-fit:contain;background:#000}
+.tafa-reel-video-v174 .tafa-native-video-v174{max-height:78vh}
+.tafa-video-v174 .tafa-native-video-v174{max-height:80vh}
+[data-media-kind="video"],[data-media-kind="reel"]{border-radius:12px}

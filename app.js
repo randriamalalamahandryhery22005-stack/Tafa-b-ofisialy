@@ -33,7 +33,30 @@ let expandedCommentTexts=new Set();
 
 
 /* V1.1.7.3 — schema-correct global search */
-async function tafaGlobalSearchV173(rawQuery, filter="all"){
+async 
+/* V1.1.7.4 — strict Videos/Reels separation + natural media sizing */
+function tafaMediaKindV174(post){
+  const t=String(post?.media_type||"").toLowerCase().trim();
+  if(t.includes("reel")) return "reel";
+  if(t==="video"||t.includes("video")||t==="mp4"||t==="webm"||t==="mov") return "video";
+  if(t==="image"||t.includes("image")||t.includes("photo")) return "photo";
+  return "text";
+}
+function tafaIsVideoV174(post){return tafaMediaKindV174(post)==="video";}
+function tafaIsReelV174(post){return tafaMediaKindV174(post)==="reel";}
+function tafaMediaMimeV174(post){
+  const t=String(post?.media_type||"").toLowerCase();
+  if(t.includes("webm")) return "video/webm";
+  if(t.includes("ogg")) return "video/ogg";
+  return "video/mp4";
+}
+function tafaVideoMarkupV174(post, reel=false){
+  if(!post?.media_url) return "";
+  const cls=reel?"tafa-reel-video-v174":"tafa-video-v174";
+  return `<div class="${cls}" data-media-kind="${reel?"reel":"video"}"><video src="${esc(post.media_url)}" controls playsinline preload="metadata" class="tafa-native-video-v174" ${reel?'aria-label="Reel"':'aria-label="Vidéo"'}></video></div>`;
+}
+
+function tafaGlobalSearchV173(rawQuery, filter="all"){
   const q=String(rawQuery??"").trim();
   if(!q) return {profiles:[],posts:[],marketplace:[]};
   const term=`%${q.replace(/[%_]/g,m=>`\\${m}`)}%`;
@@ -3305,4 +3328,9 @@ function tafaNotificationClickV172(el){
     if(typeof openProfile==="function") return openProfile(actorId);
     if(typeof navigate==="function") return navigate("profile",actorId);
   }
+}
+
+function tafaFilterMediaV174(posts, kind){
+  const k=kind==="reels"?"reel":"video";
+  return (posts||[]).filter(p=>tafaMediaKindV174(p)===k);
 }
