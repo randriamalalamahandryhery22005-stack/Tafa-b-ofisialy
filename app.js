@@ -736,8 +736,9 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
     if((kind==="video" || kind==="reel") && !fileIsVideo) throw new Error(`Le mode ${kind==="reel"?"Reel":"Vidéo"} nécessite une vidéo.`);
 
     media_type=kind==="photo" ? "photo"
-      : (kind==="reel" || kind==="video" || fileIsVideo) ? "reel"
-      : (fileIsImage ? "image" : "file");
+      : kind==="reel" ? "reel"
+      : kind==="video" ? "video"
+      : (fileIsVideo ? "video" : (fileIsImage ? "image" : "file"));
   }
 
   const id=crypto.randomUUID();
@@ -903,6 +904,7 @@ let profileTab = "posts";
 let profileViewingId = null;
 let pageTab = "posts";
 let mediaFilter = "all";
+const expandedPostTextIds = new Set();
 let marketFilter = "all";
 let friendTab = "friends";
 let friendSearch = "";
@@ -1042,7 +1044,7 @@ function canSeePost(p){
   return false;
 }
 function downloadData(data,name){if(!data)return toast("Aucun fichier disponible");const a=document.createElement("a");a.href=data;a.download=name||"tafab-media";document.body.appendChild(a);a.click();a.remove();}
-function openMediaViewer(p){const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);modal(p.title||displayName(o),`<div class="media-viewer">${p.mediaType==="video"?`<video src="${esc(p.media)}" controls autoplay></video>`:`<img src="${esc(p.media)}" alt="">`}<button class="btn primary wide" data-action="downloadMedia" data-id="${p.id}">⇩ Enregistrer</button></div>`);}
+function openMediaViewer(p){const o=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId);modal(p.title||displayName(o),`<div class="media-viewer">${["video","reel"].includes(String(p.mediaType||""))?`<video src="${esc(p.media)}" controls autoplay playsinline></video>`:`<img src="${esc(p.media)}" alt="">`}<button class="btn primary wide" data-action="downloadMedia" data-id="${p.id}">⇩ Enregistrer</button></div>`);}
 function render(){
   const splash=$("splash"),auth=$("authScreen"),app=$("appScreen");
   if(!state.current){auth.classList.remove("hidden");app.classList.add("hidden");return;}
@@ -1102,6 +1104,15 @@ function renderStories(){
   const stories=state.stories.filter(s=>new Date(s.expiresAt)>Date.now() && (s.ownerId===state.current || s.ownerType==="page" || isFriend(s.ownerId)));
   return `<div class="stories stories-premium"><div class="story-card create" data-action="createStory"><span class="plus">+</span><b>Créer</b><small>Votre story</small></div>${stories.map(s=>{const owner=s.ownerType==="page"?findPage(s.ownerId):findUser(s.ownerId);return `<div class="story-card" data-action="viewStory" data-id="${s.id}"><div class="story-ring"><div class="story-bg" style="background-image:url('${esc(s.media||"")}')"></div>${avatar(owner,"avatar sm story-avatar")}</div><span class="story-label">${esc(displayName(owner))}</span><small class="story-status">${s.ownerId===state.current?`${(s.views||[]).length} vues`:isOnline(owner)?"En ligne":""}</small></div>`}).join("")}</div>`;
 }
+function renderExpandablePostText(p){
+  const text=String(p.text||"");
+  if(!text) return "";
+  const limit=260;
+  const expandable=text.length>limit;
+  const expanded=expandedPostTextIds.has(p.id);
+  const shown=expanded||!expandable?text:text.slice(0,limit).trimEnd()+"…";
+  return `<div class="post-text ${expandable?"is-expandable":""} ${expanded?"is-expanded":""}"><span>${esc(shown)}</span>${expandable?` <button type="button" class="post-text-toggle" data-action="togglePostText" data-id="${esc(p.id)}">${expanded?"Voir moins":"Voir plus"}</button>`:""}</div>`;
+}
 function renderPost(p){
   const owner=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId); if(!owner)return"";
   if(!canSeePost(p))return"";
@@ -1116,7 +1127,7 @@ function renderPost(p){
     : "";
   return `<article class="card post post-premium" data-post="${esc(p.id)}" data-post-id="${esc(p.id)}">
     <header class="post-head"><button class="post-owner" data-action="${ownerAction}" data-id="${owner.id}">${avatar(owner,"avatar post-avatar")}<span class="post-meta"><strong>${esc(displayName(owner))}</strong><span class="post-badges">${verified(owner)} ${typePill(owner)}</span><small>${timeAgo(p.createdAt)}${p.editedAt?` · Modifiée`:""} · ${esc(p.visibility||"Public")}</small></span></button><div class="post-head-actions"><button class="icon-btn post-more" data-action="postMore" data-id="${p.id}" title="Options">•••</button>${deleteButton}</div></header>
-    ${p.title?`<h3 class="post-title">${esc(p.title)}</h3>`:""}${p.text?`<div class="post-text">${esc(p.text)}</div>`:""}${mediaHtml}
+    ${p.title?`<h3 class="post-title">${esc(p.title)}</h3>`:""}${renderExpandablePostText(p)}${mediaHtml}
     <div class="post-stats"><span class="reaction-summary">${count?`✦ ${count}`:""}</span><span>${comments.length} commentaires</span><span>${p.shares||0} partages</span></div>
     ${openReactionPostId===p.id?renderInlineReactionPicker(p):""}
     <div class="post-actions premium-reaction-bar"><button class="${mine?"is-reacted":""}" data-action="reactionMenu" data-id="${p.id}"><span class="reaction-action-icon">${mine?reactionEmoji(mine):"♡"}</span><span>${mine||"J'aime"}</span></button><button data-action="comment" data-id="${p.id}"><span class="reaction-action-icon">◯</span><span>Commenter</span></button><button data-action="share" data-id="${p.id}"><span class="reaction-action-icon">↗</span><span>Partager</span></button></div>
@@ -1301,9 +1312,9 @@ function renderSearch(){
     ...state.users.map(x=>({kind:"Personnes",title:displayName(x),sub:"@"+(x.username||"user"),searchText:[displayName(x),x.username,x.pseudo,x.email,x.firstName,x.lastName,x.country].filter(Boolean).join(" "),obj:x})),
     ...state.pages.map(x=>({kind:"Pages",title:x.name,sub:(x.category||"Page")+" · PAGE",searchText:[x.name,x.username,x.category,x.description].filter(Boolean).join(" "),obj:x})),
     ...state.groups.map(x=>({kind:"Groupes",title:x.name,sub:"Groupe",searchText:[x.name,x.description].filter(Boolean).join(" "),obj:x})),
-    ...state.posts.map(x=>({kind:x.mediaType==="video"||x.mediaType==="reel"?"Vidéos":x.mediaType?"Photos":"Publications",title:(x.title||x.text||"Publication").slice(0,80),sub:"Contenu Tafaß",searchText:[x.title,x.text,x.ownerName].filter(Boolean).join(" "),obj:x}))
+    ...state.posts.map(x=>({kind:x.mediaType==="reel"?"Reels":x.mediaType==="video"?"Vidéos":x.mediaType?"Photos":"Publications",title:(x.title||x.text||"Publication").slice(0,80),sub:"Contenu Tafaß",searchText:[x.title,x.text,x.ownerName].filter(Boolean).join(" "),obj:x}))
   ];
-  const filters=["Tout","Personnes","Pages","Groupes","Publications","Photos","Vidéos"];
+  const filters=["Tout","Personnes","Pages","Groupes","Publications","Photos","Vidéos","Reels"];
   let results=q?all.filter(x=>(x.searchText||`${x.title} ${x.sub} ${x.kind}`).toLowerCase().includes(q)):[];
   if(searchFilter!=="Tout")results=results.filter(x=>x.kind===searchFilter);
   const grouped=filters.filter(f=>f!=="Tout").map(kind=>({kind,items:results.filter(x=>x.kind===kind)})).filter(g=>g.items.length);
@@ -1964,6 +1975,10 @@ async function handleAction(e,el){
   if(a==="messageSearch")return document.querySelector("#conversationSearch")?.focus();
   if(a==="clearPageSearch"){window.globalSearchQuery="";const top=$("globalSearch");if(top)top.value="";return render();}
   if(a==="clearMediaSearch"){window.mediaSearch="";return render();}
+  if(a==="togglePostText"){
+    if(expandedPostTextIds.has(id)) expandedPostTextIds.delete(id); else expandedPostTextIds.add(id);
+    return render();
+  }
   if(a==="react")return reactPost(id,"J'aime");
   if(a==="reactionMenu")return reactionMenu(id);
   if(a==="chooseReaction"){openReactionPostId=null;return reactPost(id,el.dataset.reaction);}
