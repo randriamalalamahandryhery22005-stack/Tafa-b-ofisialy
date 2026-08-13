@@ -876,7 +876,7 @@ function localizeApp(){
 }
 
 const MENU_ITEMS = [
-["profile","◯","Profil"],["friends","♧","Amis"],["messages","▣","Messages"],
+["profile","◯","Profil"],["friends","♧","Amis"],
 ["videos","▶","Vidéos"],["reels","◆","Reels"],["notifications","♢","Notifications"],["pages","▤","Pages"],["groups","◉","Groupes"],
 ["saved","🔖","Enregistrés"],["events","◫","Événements"],
 ["settings","⚙","Paramètres"],["privacy","◌","Confidentialité"],["security","🔒","Sécurité"],
@@ -1124,7 +1124,7 @@ function renderPost(p){
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
   const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
-  const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`):"";
+  const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"></div>`):"";
   const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
   const deleteButton = p.ownerId===state.current
     ? `<button class="icon-btn post-delete-btn" type="button" title="Supprimer cette publication" aria-label="Supprimer cette publication" data-action="delete-post" data-post-id="${esc(p.id)}">🗑️</button>`

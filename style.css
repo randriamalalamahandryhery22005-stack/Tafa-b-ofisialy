@@ -3916,3 +3916,13 @@ body.dark .top-actions .menu-action{
   .top-menu-nav .nav-item{height:43px!important;min-height:43px!important}
   .nav-glyph,.nav-glyph svg{width:22px!important;height:22px!important}
 }
+
+
+/* V1.1.6.10.7 — single Messages + unobtrusive media controls
+   Messages stays only in the upper action bar; the full Menu no longer lists it.
+   Inline media has no floating download control that blocks the content.
+*/
+.media-download{display:none!important}
+.media-viewer .btn[data-action="downloadMedia"]{margin-top:10px!important}
+.post-media-wrap{position:relative!important}
+.post-media-wrap.media-click{cursor:zoom-in!important}
