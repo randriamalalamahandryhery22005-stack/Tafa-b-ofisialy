@@ -158,6 +158,20 @@ async function loadSupabaseMessages(){
     save();
   }catch(e){console.warn('Supabase messages:',e.message||e)}
 }
+async function markConversationRead(conversationId){
+  if(!supabaseReady() || !state.current || !conversationId) return;
+  try{
+    const {error}=await SB.from('messages')
+      .update({is_read:true})
+      .eq('conversation_id',conversationId)
+      .eq('recipient_id',state.current)
+      .eq('is_read',false);
+    if(error) throw error;
+    state.messages=state.messages.map(m=>m.conversationId===conversationId && m.to===state.current ? {...m,read:true}:m);
+    save();
+  }catch(e){console.warn('markConversationRead:',e.message||e)}
+}
+
 async function persistConversation(c){
   if(!supabaseReady()||!c?.id||!c.members?.length) throw new Error('Conversation invalide.');
   // V18.5: write through a SECURITY DEFINER RPC so legacy RLS policies
@@ -1431,7 +1445,13 @@ function renderNotifications(){
 }
 function renderMessages(){
   const pageBar=pageContextBar();
-  const mine=state.conversations.filter(c=>c.members?.includes(state.current));
+  const q=(window.messageConversationQuery||"").trim().toLowerCase();
+  const mine=state.conversations.filter(c=>c.members?.includes(state.current)).filter(c=>{
+    if(!q)return true;
+    const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current));
+    const last=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))[0];
+    return `${c.name||""} ${displayName(other)||""} ${last?.text||""}`.toLowerCase().includes(q);
+  });
   if(!activeConversation&&mine.length)activeConversation=mine[0].id;
   const conv=mine.find(c=>c.id===activeConversation);
   const stories=state.stories.filter(s=>new Date(s.expiresAt)>Date.now()&&(s.ownerId===state.current||isFriend(s.ownerId))).slice(0,12);
@@ -1456,7 +1476,7 @@ function messageAttachmentHtml(file){
 function renderChatPremium(c){
   const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const msgs=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   return `<header class="chat-top-premium">${avatar(other||{name:c.name},"avatar") }<div><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${c.type==="group"?`${c.members.length} membres`:isOnline(other)?"En ligne":"Hors ligne"}</small></div><div class="chat-tools"><button class="icon-btn" data-action="voiceCall" data-id="${other?.id||c.id}">☎</button><button class="icon-btn" data-action="voiceInvite" data-id="${c.id}">🎙</button></div></header>
-  <div class="chat-body-premium">${msgs.length?msgs.map(m=>`<div class="bubble-premium ${m.from===state.current?"mine":""}">${m.files?.map(messageAttachmentHtml).join("")||messageAttachmentHtml(m.file)}${m.text?`<div>${esc(m.text)}</div>`:""}<small>${timeAgo(m.createdAt)}</small></div>`).join(""):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Aucun message</b><span>Écrivez votre premier message.</span></div>`}</div>
+  <div class="chat-body-premium">${msgs.length?msgs.map(m=>`<div class="bubble-premium ${m.from===state.current?"mine":""}">${m.files?.map(messageAttachmentHtml).join("")||messageAttachmentHtml(m.file)}${m.text?`<div>${esc(m.text)}</div>`:""}<small>${timeAgo(m.createdAt)}${m.from===state.current?` · <span class="message-status ${m.read?"read":"sent"}">${m.read?"✓✓":"✓"}</span>`:""}</small></div>`).join(""):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Aucun message</b><span>Écrivez votre premier message.</span></div>`}</div>
   <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile">＋</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx"><div class="chat-input-shell"><input name="text" placeholder="Écrire un message..."><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn">➤</button></form>`;
 }
 function renderPages(){
@@ -1933,6 +1953,11 @@ function bindPageEvents(){
       await loadSupabasePosts();save();render();toast("Commentaire publié ✓");
     }catch(err){console.error(err);toast("Commentaire impossible : "+(err.message||"erreur Supabase"));}
   });
+  const convSearch=document.getElementById("conversationSearch");
+  if(convSearch){
+    convSearch.value=window.messageConversationQuery||"";
+    convSearch.oninput=()=>{window.messageConversationQuery=convSearch.value;render();};
+  }
   document.querySelectorAll("[data-chat-form]").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const id=form.dataset.chatForm,text=form.querySelector('[name="text"]').value.trim(),input=form.querySelector('input[type=file]'),files=[...(input?.files||[])];if(!text&&!files.length)return;const payload=[];for(const f of files){const data=await fileToData(f);payload.push({name:f.name,type:f.type,size:f.size,data});}sendMessage(id,text,payload);form.reset();render();});
   const theme=$("themeSelect");if(theme)theme.onchange=()=>{state.settings.dark=theme.value==="dark";save();applyTheme();};
   const lang=$("languageSelect");if(lang)lang.onchange=()=>{state.settings.language=lang.value;save();toast("Langue enregistrée");};
@@ -2056,7 +2081,7 @@ async function handleAction(e,el){
   }return;}
   if(a==="newConversation")return newConversation();
   if(a==="startPersonConversation")return startConversation(id);
-  if(a==="selectConversation"){activeConversation=id;render();return;}
+  if(a==="selectConversation"){activeConversation=id;render();markConversationRead(id).then(()=>{if(activeConversation===id)render();});return;}
   if(a==="attachFile"){document.querySelector(`input[type=file][id="chatFile_${activeConversation}"]`)?.click();return;}
   if(a==="voiceCall")return voiceCall(id);
   if(a==="voiceInvite")return toast("Message vocal simulé : connectez un backend/WebRTC pour la version réelle.");

@@ -3926,3 +3926,13 @@ body.dark .top-actions .menu-action{
 .media-viewer .btn[data-action="downloadMedia"]{margin-top:10px!important}
 .post-media-wrap{position:relative!important}
 .post-media-wrap.media-click{cursor:zoom-in!important}
+
+/* ============================================================
+   V1.1.6.11 — MESSAGES / CHAT POLISH
+============================================================ */
+.message-status{font-weight:800;letter-spacing:-1px;margin-left:2px}.message-status.sent{opacity:.65}.message-status.read{opacity:1}
+.chat-compose-premium{position:sticky;bottom:0;z-index:3;backdrop-filter:blur(14px)}
+.chat-input-shell{min-width:0;flex:1;display:flex;align-items:center;position:relative}.chat-input-shell input{width:100%;min-width:0}.chat-file-hint{position:absolute;right:10px;pointer-events:none;font-size:9px;color:var(--muted);opacity:.8}.chat-compose-premium .icon-btn{flex:0 0 38px}.chat-compose-premium .send-btn{flex:0 0 42px}
+.chat-body-premium{scroll-behavior:smooth}
+.bubble-premium small{display:block;font-size:9px;opacity:.62;margin-top:5px;text-align:right}
+@media(max-width:600px){.chat-file-hint{display:none}.chat-compose-premium{padding:8px;border-radius:18px}.chat-compose-premium .icon-btn{width:36px;height:36px}.chat-compose-premium .send-btn{width:38px;height:38px}}
