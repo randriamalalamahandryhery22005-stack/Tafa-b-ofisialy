@@ -25,6 +25,7 @@ const SB = window.supabaseClient;
 ============================================================ */
 let tafaRealtimeChannels=[];
 let realtimeBusy=false;
+let expandedCommentReplies=new Set();
 
 // Tafaß V1.1 FINAL — Photo/Video
 // Tafaß V1.1 — robust media type detection (photo/video)
@@ -1003,7 +1004,11 @@ function renderInlineReactionPicker(p){
 function renderComment(c,postId){
   const u=findUser(c.userId); if(!u)return"";
   const liked=!!c.likes?.[state.current];
-  return `<div class="comment premium-comment" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button>${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div></div></div>`;
+  const replies=state.comments.filter(x=>x.parentId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+  const expanded=expandedCommentReplies.has(c.id);
+  const replyHtml=expanded?`<div class="comment-replies-v115">${replies.map(r=>renderComment(r,postId)).join("")}</div>`:"";
+  const replyToggle=replies.length?`<button data-action="toggleReplies" data-id="${esc(c.id)}">${expanded?"Masquer":"Voir"} ${replies.length} réponse${replies.length>1?"s":""}</button>`:"";
+  return `<div class="comment premium-comment ${c.parentId?"comment-reply-v115":""}" data-comment="${esc(c.id)}">${avatar(u,"avatar sm")}<div class="comment-body"><div class="comment-bubble"><b>${esc(displayName(u))}</b><p>${esc(c.text)}</p>${c.editedAt?`<small class="comment-edited">Modifié</small>`:""}</div><div class="comment-actions"><button data-action="likeComment" data-id="${esc(c.id)}">${liked?"♥":"♡"} J'aime</button><button data-action="replyComment" data-id="${esc(c.id)}">↩ Répondre</button>${replyToggle}${u.id===state.current?`<button data-action="editComment" data-id="${esc(c.id)}">Modifier</button><button data-action="deleteComment" data-id="${esc(c.id)}">Supprimer</button>`:""}<small>${timeAgo(c.createdAt)}</small></div>${replyHtml}</div></div>`;
 }
 function requestSentRow(r){
   const u=findUser(r.to); if(!u)return "";
@@ -1698,6 +1703,8 @@ async function handleAction(e,el){
   if(a==="reportPost"){closeModal();state.reports.push({id:uid("report"),type:"post",targetId:id,userId:state.current,createdAt:new Date().toISOString()});save();return toast("Publication signalée");}
   if(a==="hidePost"){closeModal();state.posts=state.posts.filter(p=>p.id!==id);save();render();return toast("Publication masquée");}
   if(a==="likeComment")return toggleCommentLike(id);
+  if(a==="replyComment")return replyComment(id);
+  if(a==="toggleReplies")return toggleCommentReplies(id);
   if(a==="editComment")return editComment(id);
   if(a==="deleteComment")return deleteComment(id);
   if(a==="addFriend")return sendFriend(id);
@@ -1872,12 +1879,17 @@ function replyComment(id){
   $("replyForm").onsubmit=async e=>{
     e.preventDefault(); const text=$("replyText").value.trim(); if(!text)return;
     try{
-      const {error}=await SB.from("comments").insert({post_id:c.postId,parent_id:c.id,user_id:state.current,content:text});
+      const {error}=await SB.from("comments").insert({post_id:c.postId,parent_id:c.id,user_id:state.current,text:text});
       if(error)throw error;
       if(c.userId!==state.current)notify(c.userId,"reply",`${displayName(me())} a répondu à votre commentaire.`,c.postId);
       await loadSupabasePosts();save();closeModal();render();toast("Réponse publiée ✓");
     }catch(err){console.error(err);toast("Réponse impossible : "+(err.message||"erreur Supabase"));}
   };
+}
+function toggleCommentReplies(id){
+  if(expandedCommentReplies.has(id)) expandedCommentReplies.delete(id);
+  else expandedCommentReplies.add(id);
+  render();
 }
 function editComment(id){
   const c=state.comments.find(x=>x.id===id);

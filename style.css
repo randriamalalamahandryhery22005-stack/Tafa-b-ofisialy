@@ -3437,3 +3437,14 @@ body.dark{--tfa-surface:#101722;--tfa-line:#263246;--tfa-text:#f4f7ff;--tfa-mute
   .comment-form .btn{padding:8px 10px}
   .comment-bubble{max-width:calc(100vw - 100px)}
 }
+
+/* ============================================================
+   TAFAß V1.1.5 — Comment replies
+============================================================ */
+.comment-replies-v115{margin:8px 0 0 10px;padding-left:12px;border-left:2px solid var(--border,#e5e7eb);display:grid;gap:8px}
+.comment-reply-v115{margin-top:2px}
+.comment-reply-v115 .comment-bubble{background:var(--surface-2,#f5f6f8)}
+.comment-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.comment-actions button{border:0;background:transparent;padding:3px 5px;cursor:pointer;font:inherit;color:inherit;opacity:.82}
+.comment-actions button:hover{opacity:1;text-decoration:underline}
+@media(max-width:600px){.comment-replies-v115{margin-left:4px;padding-left:8px}.comment-actions{gap:5px}.comment-actions button{font-size:12px}}
