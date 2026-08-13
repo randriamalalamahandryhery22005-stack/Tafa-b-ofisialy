@@ -363,38 +363,54 @@ async function sendFriend(id){
   if(!id || id===state.current) return;
   if(isFriend(id)) return toast("Vous êtes déjà amis.");
 
-  const existing=friendRequestBetween(state.current,id);
-  if(existing){
-    if(existing.from===id && existing.to===state.current){
-      return toast("Cette personne vous a déjà envoyé une invitation.");
-    }
-    if(existing.from===state.current){
-      return toast("Invitation déjà envoyée.");
-    }
-  }
-
   try{
-    // Schéma réel: friendships(requester_id, receiver_id, status, ...)
+    // Source de vérité: public.friendships.
+    // Valeurs autorisées par valid_friend_status: pending, accepted, rejected, blocked.
+    const {data:rows,error:findError}=await SB.from("friendships")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
+      .or(`and(requester_id.eq.${state.current},receiver_id.eq.${id}),and(requester_id.eq.${id},receiver_id.eq.${state.current})`)
+      .order("created_at",{ascending:false})
+      .limit(1);
+    if(findError) throw findError;
+
+    const existing=rows?.[0];
+    if(existing){
+      if(existing.status==="accepted") return toast("Vous êtes déjà amis.");
+      if(existing.status==="pending"){
+        if(existing.requester_id===id && existing.receiver_id===state.current) return toast("Cette personne vous a déjà envoyé une invitation.");
+        return toast("Invitation déjà envoyée.");
+      }
+      // Re-open an old rejected/blocked relationship only as a new valid pending state.
+      // Never write unsupported values such as cancelled/declined.
+      if(existing.requester_id===state.current && existing.receiver_id===id && ["rejected","blocked"].includes(existing.status)){
+        const {data,error}=await SB.from("friendships")
+          .update({status:"pending",updated_at:new Date().toISOString()})
+          .eq("id",existing.id)
+          .eq("requester_id",state.current)
+          .eq("receiver_id",id)
+          .select("id,requester_id,receiver_id,status,created_at,updated_at")
+          .single();
+        if(error) throw error;
+        state.friendRequests=state.friendRequests.filter(x=>x.id!==data.id);
+        state.friendRequests.unshift({id:data.id,from:data.requester_id,to:data.receiver_id,status:"pending",createdAt:data.created_at,respondedAt:data.updated_at});
+        save();
+        await notify(id,"friend_request",`${displayName(me())} vous a envoyé une invitation d’ami.`);
+        render();
+        toast("Invitation envoyée.");
+        return;
+      }
+    }
+
     const {data,error}=await SB.from("friendships")
-      .insert({
-        requester_id:state.current,
-        receiver_id:id,
-        status:"pending"
-      })
+      .insert({requester_id:state.current,receiver_id:id,status:"pending"})
       .select("id,requester_id,receiver_id,status,created_at,updated_at")
       .single();
-
     if(error) throw error;
 
     state.friendRequests.unshift({
-      id:data.id,
-      from:data.requester_id,
-      to:data.receiver_id,
-      status:data.status,
-      createdAt:data.created_at,
-      respondedAt:data.updated_at
+      id:data.id,from:data.requester_id,to:data.receiver_id,status:"pending",
+      createdAt:data.created_at,respondedAt:data.updated_at
     });
-
     save();
     await notify(id,"friend_request",`${displayName(me())} vous a envoyé une invitation d’ami.`);
     render();
@@ -412,32 +428,17 @@ async function acceptFriend(id){
   if(!r || r.to!==state.current || r.status!=="pending") return;
 
   try{
-    // L'invitation devient directement une amitié dans la même ligne.
-    const {data,error}=await SB.from("friendships")
-      .update({
-        status:"accepted",
-        updated_at:new Date().toISOString()
-      })
+    // IMPORTANT: accept = UPDATE de la ligne pending existante.
+    // La seule valeur de succès autorisée ici est "accepted".
+    const {error}=await SB.from("friendships")
+      .update({status:"accepted",updated_at:new Date().toISOString()})
       .eq("id",id)
       .eq("receiver_id",state.current)
-      .eq("status","pending")
-      .select("id,requester_id,receiver_id,status,created_at,updated_at")
-      .single();
-
+      .eq("status","pending");
     if(error) throw error;
 
-    r.status="accepted";
-    r.respondedAt=data.updated_at;
-    state.friendRequests=state.friendRequests.filter(x=>x.id!==id);
-    state.friendships.push({
-      id:data.id,
-      a:data.requester_id,
-      b:data.receiver_id,
-      createdAt:data.created_at,
-      updatedAt:data.updated_at
-    });
-
-    save();
+    // Reload from Supabase so UI never invents a friendship row locally.
+    await loadSupabaseFriends();
     await notify(r.from,"friend_request_accepted",`${displayName(me())} a accepté votre invitation d’ami.`);
     render();
     toast("Invitation acceptée.");
@@ -453,23 +454,28 @@ async function declineFriend(id){
   if(!r || (r.to!==state.current && r.from!==state.current) || r.status!=="pending") return;
 
   try{
-    const newStatus=r.from===state.current ? "cancelled" : "declined";
-    const {data,error}=await SB.from("friendships")
-      .update({
-        status:newStatus,
-        updated_at:new Date().toISOString()
-      })
-      .eq("id",id)
-      .or(`requester_id.eq.${state.current},receiver_id.eq.${state.current}`)
-      .eq("status","pending")
-      .select("id,requester_id,receiver_id,status,created_at,updated_at")
-      .single();
-    if(error) throw error;
-
-    state.friendRequests=state.friendRequests.filter(x=>x.id!==id);
-    save();
+    if(r.from===state.current){
+      // Annulation d'une invitation sortante: suppression de la ligne pending.
+      const {error}=await SB.from("friendships")
+        .delete()
+        .eq("id",id)
+        .eq("requester_id",state.current)
+        .eq("receiver_id",r.to)
+        .eq("status","pending");
+      if(error) throw error;
+      toast("Invitation annulée.");
+    }else{
+      // Refus d'une invitation entrante: valeur autorisée = rejected.
+      const {error}=await SB.from("friendships")
+        .update({status:"rejected",updated_at:new Date().toISOString()})
+        .eq("id",id)
+        .eq("receiver_id",state.current)
+        .eq("status","pending");
+      if(error) throw error;
+      toast("Invitation refusée.");
+    }
+    await loadSupabaseFriends();
     render();
-    toast(newStatus==="cancelled"?"Invitation annulée.":"Invitation refusée.");
   }catch(err){
     console.error("declineFriend:",err);
     toast("Action impossible : "+(err.message||"erreur Supabase"));
