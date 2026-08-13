@@ -967,8 +967,11 @@ function renderPost(p){
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
   const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":""}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`:`<div class="post-media-wrap media-click" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"><button class="media-download" data-action="downloadMedia" data-id="${p.id}" onclick="event.stopPropagation()">⇩</button></div>`):"";
   const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
-  return `<article class="card post post-premium" data-post="${p.id}">
-    <header class="post-head"><button class="post-owner" data-action="${ownerAction}" data-id="${owner.id}">${avatar(owner,"avatar post-avatar")}<span class="post-meta"><strong>${esc(displayName(owner))}</strong><span class="post-badges">${verified(owner)} ${typePill(owner)}</span><small>${timeAgo(p.createdAt)} · ${esc(p.visibility||"Public")}</small></span></button><button class="icon-btn post-more" data-action="postMore" data-id="${p.id}">•••</button></header>
+  const deleteButton = p.ownerId===state.current
+    ? `<button class="icon-btn post-delete-btn" type="button" title="Supprimer cette publication" aria-label="Supprimer cette publication" data-action="delete-post" data-post-id="${esc(p.id)}">🗑️</button>`
+    : "";
+  return `<article class="card post post-premium" data-post="${esc(p.id)}" data-post-id="${esc(p.id)}">
+    <header class="post-head"><button class="post-owner" data-action="${ownerAction}" data-id="${owner.id}">${avatar(owner,"avatar post-avatar")}<span class="post-meta"><strong>${esc(displayName(owner))}</strong><span class="post-badges">${verified(owner)} ${typePill(owner)}</span><small>${timeAgo(p.createdAt)} · ${esc(p.visibility||"Public")}</small></span></button><div class="post-head-actions"><button class="icon-btn post-more" data-action="postMore" data-id="${p.id}" title="Options">•••</button>${deleteButton}</div></header>
     ${p.title?`<h3 class="post-title">${esc(p.title)}</h3>`:""}${p.text?`<div class="post-text">${esc(p.text)}</div>`:""}${mediaHtml}
     <div class="post-stats"><span class="reaction-summary">${count?`✦ ${count}`:""}</span><span>${comments.length} commentaires</span><span>${p.shares||0} partages</span></div>
     ${openReactionPostId===p.id?renderInlineReactionPicker(p):""}
@@ -2533,6 +2536,13 @@ document.addEventListener('click', async (event) => {
       const { data, error } = await client.from('posts').select('*').eq('id', postId).single();
       if (error) throw error;
       post = data;
+    }
+
+    const ownerId = post.owner_id || post.user_id || post.ownerId;
+    const currentUser = window.supabaseClient ? (await window.supabaseClient.auth.getUser()).data?.user : null;
+    if (!currentUser?.id) throw new Error('Vous devez être connecté.');
+    if (ownerId && String(ownerId) !== String(currentUser.id)) {
+      throw new Error('Vous ne pouvez supprimer que vos propres publications.');
     }
 
     await tafasDeletePublication(post);

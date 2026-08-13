@@ -3336,3 +3336,8 @@ body.dark{--tfa-surface:#101722;--tfa-line:#263246;--tfa-text:#f4f7ff;--tfa-mute
 .switch-page-active{transform:translateY(0);opacity:1}
 .page-name-below{display:flex;flex-direction:column}
 .page-name-below .account-type{font-size:11px;opacity:.62;margin-top:2px}
+
+/* Tafaß V1.1.1 — publication delete button */
+.post-head-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
+.post-delete-btn{color:#b42318!important}
+.post-delete-btn:hover{background:#fff1f0!important}
