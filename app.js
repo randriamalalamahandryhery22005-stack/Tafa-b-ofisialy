@@ -25,6 +25,19 @@ const SB = window.supabaseClient;
 ============================================================ */
 let tafaRealtimeChannels=[];
 let realtimeBusy=false;
+
+// Tafaß V1.1 — robust media type detection (photo/video)
+function tafasDetectMediaType(file) {
+  if (!file) return null;
+  const t = String(file.type || '').toLowerCase();
+  if (t.startsWith('video/')) return 'video';
+  if (t.startsWith('image/')) return 'image';
+  const n = String(file.name || '').toLowerCase();
+  if (/\.(mp4|webm|mov|m4v|avi|mkv)$/i.test(n)) return 'video';
+  if (/\.(jpg|jpeg|png|gif|webp|bmp|heic|heif)$/i.test(n)) return 'image';
+  return null;
+}
+
 function stopTafaRealtime(){
   if(!supabaseReady()) return;
   tafaRealtimeChannels.forEach(ch=>{try{SB.removeChannel(ch)}catch(e){}});
