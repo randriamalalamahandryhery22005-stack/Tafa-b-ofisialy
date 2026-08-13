@@ -1349,27 +1349,93 @@ function renderEvents(){
 }
 function openAccountSwitcher(){
   const current=me();
-  const accounts=(state.users||[]).filter(u=>u.type!=="page");
+  const saved=savedAccounts();
+  const accounts=[];
+  if(current?.email) accounts.push({email:current.email,name:displayName(current),avatar:current.avatar||"",current:true});
+  saved.forEach(a=>{
+    if(!a?.email || accounts.some(x=>String(x.email).toLowerCase()===String(a.email).toLowerCase())) return;
+    accounts.push({...a,current:false});
+  });
   modal("Changer un autre compte",`
     <div class="account-switcher-v86">
       <div class="account-switcher-current-v86">
         ${avatar(current,"avatar lg")}
-        <div><strong>${esc(displayName(current))}</strong><small>Compte actuellement utilisé</small></div>
+        <div><strong>${esc(displayName(current)||current?.email||"Compte")}</strong><small>Session Supabase actuellement utilisée</small></div>
         <span class="active-pill-v86">ACTIF</span>
       </div>
-      <div class="account-switcher-title-v86">Vos comptes</div>
+      <div class="account-switcher-title-v86">Vos comptes enregistrés</div>
       <div class="account-switcher-list-v86">
-        ${accounts.map(u=>`
-          <button type="button" class="account-switch-row-v86 ${u.id===state.current?"is-active":""}" data-action="selectAccount" data-id="${esc(u.id)}">
-            ${avatar(u,"avatar")}
-            <span class="account-switch-copy-v86"><strong>${esc(displayName(u))}</strong><small>@${esc(u.username||"")} · ${u.id===state.current?"Compte actuel":"Changer de compte"}</small></span>
-            ${u.id===state.current?'<span class="account-check-v86">✓</span>':'<span class="menu-arrow-v86">›</span>'}
+        ${accounts.map(a=>`
+          <button type="button" class="account-switch-row-v86 ${a.current?"is-active":""}" data-action="selectAccount" data-id="${esc(a.email)}">
+            ${a.avatar?`<img class="avatar" src="${esc(a.avatar)}" alt="">`:`<span class="avatar">${esc((a.name||a.email||"T")[0].toUpperCase())}</span>`}
+            <span class="account-switch-copy-v86"><strong>${esc(a.name||a.email)}</strong><small>${esc(a.email)} · ${a.current?"Compte actuel":"Se connecter"}</small></span>
+            ${a.current?'<span class="account-check-v86">✓</span>':'<span class="menu-arrow-v86">›</span>'}
           </button>`).join("")}
       </div>
       <button type="button" class="add-account-v86" data-action="addAccount">
-        <span>＋</span><strong>Ajouter un autre compte</strong><small>Créer ou connecter un autre compte</small>
+        <span>＋</span><strong>Ajouter un autre compte</strong><small>Se connecter avec un autre compte Supabase</small>
       </button>
     </div>`);
+}
+
+async function switchSupabaseAccount(email){
+  const targetEmail=String(email||"").trim().toLowerCase();
+  if(!targetEmail || !supabaseReady()) return toast("Compte Supabase indisponible.");
+  if(String(me()?.email||"").toLowerCase()===targetEmail) return closeModal();
+
+  modal("Connexion au compte",`
+    <form id="switchAccountForm" class="auth-modal-form" style="display:grid;gap:12px">
+      <p style="margin:0;color:var(--muted,#667085)">Pour protéger la session, Tafaß va d'abord fermer le compte actuel, puis ouvrir une nouvelle session Supabase.</p>
+      <label>E-mail<input id="switchAccountEmail" type="email" value="${esc(targetEmail)}" readonly autocomplete="username"></label>
+      <label>Mot de passe<input id="switchAccountPassword" type="password" autocomplete="current-password" required placeholder="Votre mot de passe"></label>
+      <button class="btn primary wide" type="submit">Se connecter</button>
+      <button class="btn secondary wide" type="button" data-action="closeModal">Annuler</button>
+    </form>`);
+
+  const form=$("switchAccountForm");
+  if(!form) return;
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const password=$("switchAccountPassword")?.value||"";
+    if(!password) return toast("Entrez votre mot de passe.");
+    const submit=form.querySelector('button[type="submit"]');
+    if(submit){submit.disabled=true;submit.textContent="Connexion…";}
+    try{
+      // A real account switch is always a Supabase Auth session transition.
+      // No local user id is ever used as an authentication mechanism.
+      const {error:outError}=await SB.auth.signOut();
+      if(outError) throw outError;
+      state.current=null;
+      state.users=[];
+      state.posts=[];
+      state.comments=[];
+      state.notifications=[];
+      save();
+
+      const {data,error}=await SB.auth.signInWithPassword({email:targetEmail,password});
+      if(error) throw error;
+      if(!data?.session) throw new Error("Session Supabase non disponible.");
+
+      await hydrateSupabaseSession();
+      closeModal();
+      route="home";
+      try{await loadSupabaseMessages();}catch(err){console.warn("Messages après changement de compte:",err);}
+      try{await startTafaRealtime();}catch(err){console.warn("Realtime après changement de compte:",err);}
+      render();
+      toast("Compte changé avec succès.");
+    }catch(err){
+      console.error("Changement de compte Supabase:",err);
+      state.current=null;
+      state.users=[];
+      save();
+      closeModal();
+      render();
+      toast(/invalid login credentials|invalid.*credentials|identifiants/i.test(String(err?.message||""))
+        ? "Identifiants incorrects."
+        : "Impossible de changer de compte : "+(err?.message||"erreur Supabase"));
+    }
+  };
+  $("switchAccountPassword")?.focus();
 }
 function renderMenu(){
   const pageBar=pageContextBar();
@@ -1787,9 +1853,23 @@ async function handleAction(e,el){
   if(a==="helpTopic"){ const t=el.dataset.topic; const help={"Compte et connexion":"Gérez la connexion, l'inscription, le changement de mot de passe et la déconnexion.","Publications et Stories":"Créez, modifiez, supprimez, enregistrez et partagez vos contenus. La visibilité peut être Public, Amis ou Moi uniquement.","Amis et abonnés":"Envoyez des invitations, acceptez ou refusez des demandes et gérez vos abonnements.","Messages et appels":"Recherchez une personne, envoyez du texte, des photos, vidéos et fichiers. Les appels sont simulés dans le prototype.","Pages et groupes":"Créez une Page ou un groupe, publiez au nom de votre Page et gérez les membres.","Badge bleu":"Demandez le badge bleu en 5 étapes pour 25 000 Ar/mois. Le paiement reste simulé localement.","Confidentialité":"Réglez la visibilité de votre profil, bio, photos, situation amoureuse, pseudo, publications et Stories.","Sécurité":"Modifiez votre mot de passe, surveillez les sessions et activez la vérification en deux étapes dans le prototype.","Marketplace":"Publiez des annonces, recherchez des produits et contactez un vendeur.","Recherche":"Recherchez des personnes, comptes, Pages, groupes, publications, photos, vidéos et Reels."}; return modal(t,`<div class="help-topic-card-v91"><div class="help-topic-icon-v91">?</div><p>${esc(help[t]||"Cette rubrique contient les informations d'utilisation de Tafaß.")}</p><button class="btn primary wide" data-action="closeModal">Compris</button></div>`); }
   if(a==="applySettings"){state.settings=state.settings||{};document.querySelectorAll("[data-setting-key]").forEach(x=>{state.settings[x.dataset.settingKey]=x.value});save();toast("Paramètres appliqués");return;}
   if(a==="switchAccount")return openAccountSwitcher();
-  if(a==="addAccount"){closeModal();return toast("Ajout de plusieurs comptes sera relié à Supabase dans une prochaine étape.");}
+  if(a==="addAccount"){
+    closeModal();
+    (async()=>{
+      try{
+        if(supabaseReady()) await SB.auth.signOut();
+        state.current=null; state.users=[]; state.posts=[]; state.comments=[]; state.notifications=[];
+        save();
+        render();
+        $("authScreen")?.classList.remove("hidden");
+        $("appScreen")?.classList.add("hidden");
+        $("loginIdentifier")?.focus();
+      }catch(e){console.error("Ajout de compte:",e);toast("Impossible d'ouvrir la connexion.");}
+    })();
+    return;
+  }
 
-  if(a==="selectAccount"){return toast("Le changement de compte local est désactivé avec Supabase Auth.");}
+  if(a==="selectAccount"){return switchSupabaseAccount(el.dataset.id);}
   if(a==="logout"){
     (async()=>{try{await signOutSupabase();state.pageMode=null;route="home";render();toast("Session déconnectée");}
     catch(e){console.error(e);toast("Impossible de se déconnecter.");}})();
