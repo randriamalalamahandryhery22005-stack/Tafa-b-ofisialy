@@ -33,7 +33,7 @@ let expandedCommentTexts=new Set();
 
 
 /* V1.1.7.3 — schema-correct global search */
-async 
+async
 /* V1.1.7.4 — strict Videos/Reels separation + natural media sizing */
 
 /* V1.1.7.5 — Friends advanced helpers, matching existing schema */
@@ -1463,7 +1463,7 @@ function renderPost(p){
   if(!canSeePost(p))return"";
   const reactions=p.reactions||{}, count=Object.values(reactions).reduce((a,b)=>a+b,0), mine=p.myReaction?.[state.current]||"";
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
-  const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
+  const notificationFocus=window.tafaNotificationTarget?.postId===p.id;
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
   const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"></div>`):"";
   const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
@@ -3509,3 +3509,19 @@ function tafaFriendSuggestionsV175(users){
 function tafaMarketplaceFilterV176(items,q=""){
   return (items||[]).filter(x=>tafaMarketplaceMatchesV176(x,q));
 }
+
+
+/* V1.1.7.11 — lightweight diagnostics / cleanup */
+window.tafaDiagnosticsV1711 = {
+  version:"1.1.7.11",
+  modules:["actualites","amis","recherche","videos","reels","marketplace",
+           "notifications","messages","profil","pages","groupes","security"],
+  check(){
+    const required=["state"];
+    return {
+      ok:required.every(k=>typeof window[k]!=="undefined" || typeof globalThis[k]!=="undefined"),
+      version:this.version,
+      modules:this.modules.slice()
+    };
+  }
+};
