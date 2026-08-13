@@ -299,11 +299,15 @@ function friendActionState(id){
 }
 
 async function sendFriend(id){
-  if(!supabaseReady() || !state.current) return toast("Session Supabase introuvable");
-  if(!id || id===state.current) return;
+  if(!supabaseReady()) return toast("Session Supabase introuvable");
+  const {data:{user},error:authError}=await SB.auth.getUser();
+  if(authError || !user?.id) return toast("Session Supabase introuvable");
+  const currentUserId=user.id;
+  state.current=currentUserId;
+  if(!id || id===currentUserId) return;
   if(isFriend(id)) return toast("Vous êtes déjà amis.");
 
-  const existing=friendRequestBetween(state.current,id);
+  const existing=friendRequestBetween(currentUserId,id);
   if(existing){
     if(existing.from===id && existing.to===state.current){
       return toast("Cette personne vous a déjà envoyé une invitation.");
@@ -316,7 +320,7 @@ async function sendFriend(id){
   try{
     const {data,error}=await SB.from("friend_requests")
       .insert({
-        sender_id:state.current,
+        sender_id:currentUserId,
         receiver_id:id,
         status:"pending"
       })

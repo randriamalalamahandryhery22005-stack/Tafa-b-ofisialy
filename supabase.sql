@@ -293,6 +293,11 @@ create table if not exists public.friend_requests (
 
 alter table public.friend_requests enable row level security;
 
+-- REST/PostgREST permissions for the authenticated role.
+-- RLS policies below control WHICH rows can be accessed; these grants control
+-- whether the role can access the table at all.
+grant select, insert, update, delete on table public.friend_requests to authenticated;
+
 drop policy if exists "friend_requests_select_own" on public.friend_requests;
 create policy "friend_requests_select_own"
 on public.friend_requests
