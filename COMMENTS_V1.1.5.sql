@@ -1,4 +1,4 @@
--- TAFAß V1.1.5.4 — COMMENTS / REPLIES SCHEMA COMPATIBILITY
+-- TAFAß V1.1.5.6 — COMMENTS / REPLIES SCHEMA COMPATIBILITY
 -- The existing database requires public.comments.text NOT NULL.
 -- The frontend therefore writes BOTH text and content.
 
@@ -121,28 +121,28 @@ BEGIN
   v_vals := ARRAY['$1'];
 
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='actor_id') THEN
-    v_cols := v_cols || 'actor_id'; v_vals := v_vals || '$2';
+    v_cols := array_append(v_cols, 'actor_id'); v_vals := array_append(v_vals, '$2');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='type') THEN
-    v_cols := v_cols || 'type'; v_vals := v_vals || '$3';
+    v_cols := array_append(v_cols, 'type'); v_vals := array_append(v_vals, '$3');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='title') THEN
-    v_cols := v_cols || 'title'; v_vals := v_vals || '$4';
+    v_cols := array_append(v_cols, 'title'); v_vals := array_append(v_vals, '$4');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='message') THEN
-    v_cols := v_cols || 'message'; v_vals := v_vals || '$5';
+    v_cols := array_append(v_cols, 'message'); v_vals := array_append(v_vals, '$5');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='entity_type') THEN
-    v_cols := v_cols || 'entity_type'; v_vals := v_vals || '$6';
+    v_cols := array_append(v_cols, 'entity_type'); v_vals := array_append(v_vals, '$6');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='entity_id') THEN
-    v_cols := v_cols || 'entity_id'; v_vals := v_vals || '$7';
+    v_cols := array_append(v_cols, 'entity_id'); v_vals := array_append(v_vals, '$7');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='is_read') THEN
-    v_cols := v_cols || 'is_read'; v_vals := v_vals || '$8';
+    v_cols := array_append(v_cols, 'is_read'); v_vals := array_append(v_vals, '$8');
   END IF;
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='notifications' AND column_name='created_at') THEN
-    v_cols := v_cols || 'created_at'; v_vals := v_vals || '$9';
+    v_cols := array_append(v_cols, 'created_at'); v_vals := array_append(v_vals, '$9');
   END IF;
 
   v_sql := format(
@@ -187,4 +187,4 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 NOTIFY pgrst, 'reload schema';
-SELECT 'TAFA V1.1.5.4 — text + content COMPATIBILITY OK' AS status;
+SELECT 'TAFA V1.1.5.6 — text + content COMPATIBILITY OK' AS status;
