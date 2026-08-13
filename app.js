@@ -333,6 +333,9 @@ async function sendFriend(id){
     // Notification locale pour l'utilisateur courant; la notification
     // persistante côté destinataire sera ajoutée avec le système notifications.
     save();
+    // Notification persistante côté destinataire. L'auth.uid() de la session
+    // courante reste la seule identité utilisée pour l'expéditeur.
+    await notify(id,"friend_request",`${displayName(me())} vous a envoyé une invitation d’ami.`);
     render();
     toast("Invitation envoyée.");
   }catch(err){
@@ -375,6 +378,7 @@ async function acceptFriend(id){
     }
 
     save();
+    await notify(r.from,"friend_request_accepted",`${displayName(me())} a accepté votre invitation d’ami.`);
     render();
     toast("Invitation acceptée.");
   }catch(err){
@@ -1017,7 +1021,12 @@ function renderFriends(){
   let suggestions=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)&&u.id!==ADMIN_ID);
   const q=friendSearch.trim().toLowerCase();
   const match=u=>!q||`${displayName(u)} ${u.username||""}`.toLowerCase().includes(q);
-  friends=friends.filter(match); suggestions=suggestions.filter(match);
+  friends=friends.filter(match);
+  suggestions=suggestions.filter(match).sort((a,b)=>{
+    const mutualDiff=mutualCount(b.id)-mutualCount(a.id);
+    if(mutualDiff)return mutualDiff;
+    return displayName(a).localeCompare(displayName(b),undefined,{sensitivity:"base"});
+  });
 
   const tabButton=(id,label,count="")=>`<button class="${friendTab===id?"active":""}" data-action="friendTab" data-tab="${id}">${label}${count!==""?` <b>${count}</b>`:""}</button>`;
   let content="";
@@ -1054,19 +1063,35 @@ function requestRowPremium(r){
   return `<article class="friend-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))}</b><span>@${esc(u.username||"user")}</span><small>Invitation d'ami</small></div><div class="friend-actions"><button class="btn primary" data-action="acceptFriend" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="declineFriend" data-id="${r.id}">Refuser</button></div></article>`;
 }
 function friendSuggestionPremium(u){
-  const friends=isFriend(u.id);
-  const action=friends
-    ? `<button class="btn secondary" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`
-    : (friendActionState(u.id)==="sent"
-      ? `<button class="btn secondary" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id)?.id||""}">Invitation envoyée</button>`
-      : `<button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button>`);
+  const status=friendActionState(u.id);
+  let action="";
+  if(status==="friends") action=`<button class="btn secondary" data-action="removeFriend" data-id="${u.id}">✓ Amis</button>`;
+  else if(status==="sent") action=`<button class="btn secondary" data-action="declineFriend" data-id="${outgoingFriendRequest(u.id)?.id||""}">Invitation envoyée</button>`;
+  else if(status==="received"){
+    const r=incomingFriendRequest(u.id);
+    action=`<button class="btn primary" data-action="acceptFriend" data-id="${r?.id||""}">Accepter</button><button class="btn secondary" data-action="declineFriend" data-id="${r?.id||""}">Refuser</button>`;
+  } else action=`<button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button>`;
   return `<article class="friend-card suggestion-card">${avatar(u,"avatar friend-avatar")}<div class="friend-info"><b>${esc(displayName(u))} ${verified(u)}</b><span>@${esc(u.username||"user")}</span><small>${mutualCount(u.id)} ami(s) en commun</small></div><div class="friend-actions">${action}</div></article>`;
 }
 function isFriend(id){return state.friendships.some(f=>(f.a===state.current&&f.b===id)||(f.b===state.current&&f.a===id));}
 function friendRow(u){return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${mutualCount(u.id)} ami(s) en commun</small></div><div class="actions"><button class="btn secondary" data-action="viewProfile" data-id="${u.id}">Profil</button><button class="btn ghost danger" data-action="removeFriend" data-id="${u.id}">Supprimer</button></div></div>`}
 function requestRow(r){const u=findUser(r.from);return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)}</small></div><div class="actions"><button class="btn primary" data-action="acceptFriend" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="declineFriend" data-id="${r.id}">Refuser</button></div></div>`}
 function friendSuggestion(u){return `<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)} · ${mutualCount(u.id)} en commun</small></div><button class="btn primary" data-action="addFriend" data-id="${u.id}">Ajouter</button></div>`}
-function mutualCount(id){return 0;}
+function friendIdsFor(userId){
+  const ids=new Set();
+  state.friendships.forEach(f=>{
+    if(f.a===userId) ids.add(f.b);
+    else if(f.b===userId) ids.add(f.a);
+  });
+  return ids;
+}
+function mutualCount(id){
+  if(!id||id===state.current)return 0;
+  const mine=friendIdsFor(state.current), theirs=friendIdsFor(id);
+  let count=0;
+  mine.forEach(x=>{if(theirs.has(x))count++;});
+  return count;
+}
 function resolveDeepLinkValue(value){
   const raw=(value||"").trim();
   const m=raw.match(/(?:[?&]|\/)id=([^&#/\s]+)/i);
