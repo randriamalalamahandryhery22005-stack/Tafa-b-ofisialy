@@ -70,10 +70,15 @@ DECLARE
   v_vals text[] := ARRAY[]::text[];
   v_sql text;
 BEGIN
-  -- Determine notification recipient.
+  -- Determine notification recipient without assuming a specific posts owner column.
   IF NEW.parent_id IS NULL THEN
-    SELECT p.owner_id INTO v_recipient
-    FROM public.posts p WHERE p.id = NEW.post_id;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='posts' AND column_name='owner_id') THEN
+      EXECUTE 'SELECT owner_id FROM public.posts WHERE id = $1' INTO v_recipient USING NEW.post_id;
+    ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='posts' AND column_name='user_id') THEN
+      EXECUTE 'SELECT user_id FROM public.posts WHERE id = $1' INTO v_recipient USING NEW.post_id;
+    ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='posts' AND column_name='author_id') THEN
+      EXECUTE 'SELECT author_id FROM public.posts WHERE id = $1' INTO v_recipient USING NEW.post_id;
+    END IF;
   ELSE
     SELECT c.user_id INTO v_recipient
     FROM public.comments c WHERE c.id = NEW.parent_id;
