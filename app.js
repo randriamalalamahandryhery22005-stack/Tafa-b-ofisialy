@@ -145,63 +145,24 @@ async function startTafaRealtime(){
 async function loadSupabaseMessages(){
   if(!supabaseReady()||!state.current) return;
   try{
-    // Source de vérité: conversation_members + conversations + messages.
-    // Ne dépend plus uniquement de conversations.members[] afin que
-    // le destinataire retrouve toujours la conversation.
-    const {data:cm,error:cme}=await SB.from('conversation_members')
-      .select('conversation_id')
-      .eq('user_id',state.current);
-    if(cme) throw cme;
+    // Read through SECURITY DEFINER RPCs so RLS cannot hide valid
+    // conversations/messages from the logged-in participant.
+    const {data:cs,error:ce}=await SB.rpc('tafa_get_user_conversations');
+    if(ce) throw ce;
 
-    const ids=[...new Set((cm||[]).map(r=>r.conversation_id).filter(Boolean))];
-    let convs=[];
+    const convs=(cs||[]).map(c=>({
+      id:c.id,
+      type:c.type||'private',
+      members:Array.isArray(c.members)?c.members:[],
+      name:'',
+      createdAt:c.created_at
+    }));
 
-    if(ids.length){
-      const {data:cs,error:ce}=await SB.from('conversations')
-        .select('id,type,created_at,members')
-        .in('id',ids)
-        .order('created_at',{ascending:false});
-      if(ce) throw ce;
-      convs=(cs||[]).map(c=>({
-        id:c.id,
-        type:c.type||'private',
-        members:Array.isArray(c.members)?c.members:[],
-        name:c.name||'',
-        createdAt:c.created_at
-      }));
-    }
-
-    // Fallback de compatibilité pour les anciennes conversations qui ont
-    // members[] mais dont conversation_members n'a pas encore été synchronisé.
-    const {data:legacyCs,error:legacyErr}=await SB.from('conversations')
-      .select('id,type,created_at,members')
-      .contains('members',[state.current])
-      .order('created_at',{ascending:false});
-    if(!legacyErr){
-      const seen=new Set(convs.map(c=>String(c.id)));
-      (legacyCs||[]).forEach(c=>{
-        if(!seen.has(String(c.id))){
-          convs.push({
-            id:c.id,
-            type:c.type||'private',
-            members:Array.isArray(c.members)?c.members:[],
-            name:c.name||'',
-            createdAt:c.created_at
-          });
-        }
-      });
-    }
-
-    convs.sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0));
     state.conversations=convs;
 
     if(convs.length){
       const conversationIds=convs.map(c=>c.id);
-      const {data:ms,error:me}=await SB.from('messages')
-        .select('*')
-        .in('conversation_id',conversationIds)
-        .order('created_at',{ascending:true})
-        .limit(2000);
+      const {data:ms,error:me}=await SB.rpc('tafa_get_conversation_messages',{p_conversation_ids:conversationIds});
       if(me) throw me;
 
       state.messages=(ms||[]).map(m=>({
@@ -222,9 +183,15 @@ async function loadSupabaseMessages(){
       state.messages=[];
     }
 
+    // Make the current conversation deterministic after a server refresh.
+    if(activeConversation && !convs.some(c=>String(c.id)===String(activeConversation))){
+      activeConversation=convs[0]?.id||null;
+    }
     save();
+    return true;
   }catch(e){
     console.warn('Supabase messages:',e.message||e);
+    return false;
   }
 }
 async function markConversationRead(conversationId){
