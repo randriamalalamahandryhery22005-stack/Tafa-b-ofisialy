@@ -124,7 +124,8 @@ async function startTafaRealtime(){
     ['story_reactions','story-reaction-change',()=>loadSupabaseStories().then(render)],
     ['story_replies','story-reply-change',()=>loadSupabaseStories().then(render)],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
-    ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)]
+    ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)],
+    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)]
   ];
 
   specs.forEach(([table,name,refresh,filter])=>{
@@ -529,6 +530,39 @@ function profileFromRow(p){
   };
 }
 
+async function loadSupabaseMarketplace(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const {data,error}=await SB.from("marketplace_listings").select("*").order("created_at",{ascending:false}).limit(300);
+    if(error) throw error;
+    state.marketplace=(data||[]).map(r=>({
+      id:r.id,
+      ownerId:r.owner_id,
+      kind:r.kind||"Produit",
+      title:r.title||"",
+      price:r.price||"",
+      description:r.description||"",
+      location:r.location||"Madagascar",
+      image:r.image_url||"",
+      createdAt:r.created_at
+    }));
+    save();
+  }catch(e){
+    console.warn("Marketplace Supabase:",e.message||e);
+  }
+}
+async function uploadMarketplaceImage(file){
+  if(!file || !supabaseReady() || !state.current) return "";
+  if(!String(file.type||"").toLowerCase().startsWith("image/")) throw new Error("Seules les images sont autorisées.");
+  if(file.size>15*1024*1024) throw new Error("Image trop volumineuse. Maximum: 15 Mo.");
+  const ext=(file.name.split(".").pop()||"jpg").toLowerCase().replace(/[^a-z0-9]/g,"")||"jpg";
+  const path=`${state.current}/${crypto.randomUUID()}.${ext}`;
+  const {error}=await SB.storage.from("marketplace").upload(path,file,{contentType:file.type,upsert:false,cacheControl:"3600"});
+  if(error) throw error;
+  const {data}=SB.storage.from("marketplace").getPublicUrl(path);
+  return data?.publicUrl||"";
+}
+
 async function hydrateSupabaseSession(){
   if(!supabaseReady()) return false;
   const {data:{session},error} = await SB.auth.getSession();
@@ -558,6 +592,7 @@ async function hydrateSupabaseSession(){
   await loadSupabasePosts();
   await loadSupabaseFriends();
   await loadSupabaseStories();
+  await loadSupabaseMarketplace();
   save();
   return true;
 }
@@ -1614,7 +1649,7 @@ function renderMarketplace(){
   const q=(window.marketSearch||"").toLowerCase().trim(); if(q)items=items.filter(x=>`${x.title} ${x.description} ${x.location}`.toLowerCase().includes(q));
   const sellers=[...new Set((state.marketplace||[]).map(x=>x.ownerId))].map(findUser).filter(Boolean).filter(u=>u.id!==state.current).slice(0,6);
   return `<section class="marketplace-hub premium-page"><div class="market-hero"><div><h1>Marketplace</h1></div><button class="btn primary" data-action="createMarketplace">＋</button></div><div class="market-toolbar"><div class="market-search"><span>⌕</span><input id="marketSearch" value="${esc(window.marketSearch||"")}" placeholder="Rechercher une vente ou un service"></div><button class="filter ${marketFilter==="all"?"active":""}" data-action="marketFilter" data-filter="all">Tout</button><button class="filter ${marketFilter==="products"?"active":""}" data-action="marketFilter" data-filter="products">Ventes</button><button class="filter ${marketFilter==="services"?"active":""}" data-action="marketFilter" data-filter="services">Services</button></div>
-  <div class="market-grid-premium">${items.length?items.map(item=>`<article class="market-item-card"><div class="market-item-top"><span class="type-pill">${esc(item.kind||"Produit")}</span><button class="icon-btn market-more" data-action="marketMore" data-id="${item.id}" title="Plus">•••</button></div><div class="market-item-media media-click" data-action="viewMarketMedia" data-id="${item.id}">${item.image?`<img src="${esc(item.image)}" alt="${esc(item.title)}"><button class="media-download" data-action="downloadMarketMedia" data-id="${item.id}" onclick="event.stopPropagation()">⇩</button>`:`<span>◇</span>`}</div><div class="market-item-body"><h3>${esc(item.title)}</h3><strong>${esc(item.price||"Prix à définir")}</strong><p>${esc(item.description||"")}</p><small>${esc(item.location||"Madagascar")}</small><button class="btn primary wide" data-action="openMarketItem" data-id="${item.id}">Voir</button></div></article>`).join(""):`<div class="empty-state market-empty"><div class="empty-icon">◇</div><b>Aucune annonce</b><button class="btn primary" data-action="createMarketplace">Vendre</button></div>`}</div>
+  <div class="market-grid-premium">${items.length?items.map(item=>`<article class="market-item-card"><div class="market-item-top"><span class="type-pill">${esc(item.kind||"Produit")}</span><button class="icon-btn market-more" data-action="marketMore" data-id="${item.id}" title="Plus">•••</button></div><div class="market-item-media media-click" data-action="viewMarketMedia" data-id="${item.id}">${item.image?`<img src="${esc(item.image)}" alt="${esc(item.title)}">`:`<span>◇</span>`}</div><div class="market-item-body"><h3>${esc(item.title)}</h3><strong>${esc(item.price||"Prix à définir")}</strong><p>${esc(item.description||"")}</p><small>${esc(item.location||"Madagascar")}</small><button class="btn primary wide" data-action="openMarketItem" data-id="${item.id}">Voir</button></div></article>`).join(""):`<div class="empty-state market-empty"><div class="empty-icon">◇</div><b>Aucune annonce</b><button class="btn primary" data-action="createMarketplace">Vendre</button></div>`}</div>
   ${sellers.length?`<div class="market-sellers card"><div class="section-title"><b>Vendeurs suggérés</b></div><div class="seller-strip">${sellers.map(u=>`<button class="seller-chip" data-action="viewProfile" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>${isOnline(u)?"En ligne":"Vendeur"}</small></span></button>`).join("")}</div></div>`:""}</section>`;
 }
 function renderEvents(){
@@ -2546,17 +2581,51 @@ async function sendMessage(convId,text,fileOrFiles){
   render();
 }
 function voiceCall(id){modal("Appel vocal",`<div class="empty"><div class="empty-icon">☎</div><b>Appel simulé</b><p>L'interface est prête. Pour un appel réel, branchez WebRTC + signalisation backend.</p><button class="btn primary" data-action="closeModal">Terminer</button></div>`);}
-function createMarketplace(){
+async function createMarketplace(){
+  if(!supabaseReady()) return toast("Supabase non disponible.");
   modal("Nouvelle annonce",`<form id="marketForm" class="premium-form">
     <label>Type<select id="mKind"><option>Produit</option><option>Service</option><option>Boutique</option></select></label>
-    <label>Titre<input id="mTitle" required placeholder="Ex. Smartphone, vêtement, service..."></label>
-    <label>Prix<input id="mPrice" placeholder="Ex. 250 000 Ar"></label>
-    <label>Description<textarea id="mDesc" required></textarea></label>
-    <label>Localisation<input id="mLoc" placeholder="Antananarivo"></label>
-    <label>Photo<input id="mFile" type="file" accept="image/*"></label>
-    <button class="btn primary wide">Publier l'annonce</button>
+    <label>Titre<input id="mTitle" required maxlength="120" placeholder="Ex. Smartphone, vêtement, service..."></label>
+    <label>Prix<input id="mPrice" maxlength="60" placeholder="Ex. 250 000 Ar"></label>
+    <label>Description<textarea id="mDesc" required maxlength="3000" placeholder="Décrivez clairement votre annonce..."></textarea></label>
+    <label>Localisation<input id="mLoc" maxlength="120" placeholder="Antananarivo"></label>
+    <label>Photo<input id="mFile" type="file" accept="image/*" required></label>
+    <button class="btn primary wide" type="submit">Publier l'annonce</button>
   </form>`);
-  $("marketForm").onsubmit=e=>{e.preventDefault();const f=$("mFile").files[0];fileToData(f).then(image=>{state.marketplace=state.marketplace||[];state.marketplace.unshift({id:uid("market"),ownerId:state.current,kind:$("mKind").value,title:$("mTitle").value.trim(),price:$("mPrice").value.trim(),description:$("mDesc").value.trim(),location:$("mLoc").value.trim(),image,createdAt:new Date().toISOString()});save();closeModal();render();toast("Annonce publiée");});};
+  const form=$("marketForm");
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    const btn=form.querySelector('button[type="submit"]');
+    btn.disabled=true; btn.textContent="Publication...";
+    try{
+      const {data:{user},error:userError}=await SB.auth.getUser();
+      if(userError) throw userError;
+      if(!user?.id) throw new Error("Session Supabase introuvable.");
+      const file=$("mFile").files[0];
+      if(!file) throw new Error("Ajoutez une photo.");
+      const image=await uploadMarketplaceImage(file);
+      const id=crypto.randomUUID();
+      const payload={
+        id,
+        owner_id:user.id,
+        kind:$("mKind").value,
+        title:$("mTitle").value.trim(),
+        price:$("mPrice").value.trim(),
+        description:$("mDesc").value.trim(),
+        location:$("mLoc").value.trim()||"Madagascar",
+        image_url:image||null
+      };
+      const {error}=await SB.from("marketplace_listings").insert(payload);
+      if(error) throw error;
+      await loadSupabaseMarketplace();
+      closeModal(); render(); toast("Annonce publiée ✓");
+    }catch(err){
+      console.error("Marketplace:",err);
+      toast("Publication impossible : "+(err.message||"erreur Supabase"));
+    }finally{
+      btn.disabled=false; btn.textContent="Publier l'annonce";
+    }
+  };
 }
 function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de la Page<input id="pName" required></label><label>Catégorie<select id="pCat">${PAGE_CATS.map(x=>`<option>${x}</option>`).join("")}</select></label><label>Username<input id="pUser" required placeholder="ma_page"></label><label>Description<textarea id="pDesc"></textarea></label><label>E-mail<input id="pEmail" type="email"></label><label>Téléphone<input id="pPhone"></label><label>Site web<input id="pWeb"></label><label>Adresse<input id="pAddress"></label><label>Horaires<input id="pHours"></label><label>Services / produits<textarea id="pServices"></textarea></label><button class="btn primary wide">Créer la Page</button></form>`);
   $("pageForm").onsubmit=e=>{e.preventDefault();const p={id:uid("page"),ownerId:state.current,name:$("pName").value.trim(),category:$("pCat").value,username:$("pUser").value.trim(),description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:"",cover:"",createdAt:new Date().toISOString()};state.pages.push(p);save();closeModal();render();toast("Page créée");};
