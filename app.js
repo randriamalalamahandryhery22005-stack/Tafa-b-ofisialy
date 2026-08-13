@@ -553,11 +553,12 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   }
 
   const id=crypto.randomUUID();
+  // Existing Tafaß database schema uses user_id + content.
+  // Keep the frontend model (ownerId/text) separate from Supabase column names.
   const payload={
     id,
-    owner_id: ownerId,
-    title: "Publication",
-    text: String(text||""),
+    user_id: ownerId,
+    content: String(text||""),
     media_url: media_url || null,
     media_type,
     visibility: postVisibilityToDb(visibility)
@@ -570,7 +571,7 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
     }
     const msg=[error.message,error.details,error.hint].filter(Boolean).join(" — ");
     if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par Supabase (RLS). Exécutez PUBLICATIONS_V4_SCHEMA_FIX.sql puis réessayez.");
-    if(/column .*owner_id|column .*text|schema cache/i.test(msg)) throw new Error("Le schéma de la table posts n'est pas encore synchronisé. Exécutez PUBLICATIONS_V4_SCHEMA_FIX.sql dans Supabase.");
+    if(/column .*owner_id|column .*text|schema cache/i.test(msg)) throw new Error("Le schéma de la table posts ne correspond pas à l'installation actuelle de Tafaß. Vérifiez les colonnes user_id et content de public.posts.");
     if(/foreign key|profiles/i.test(msg)) throw new Error("Le profil Supabase de ce compte est introuvable. "+msg);
     throw new Error(msg||"Erreur Supabase lors de la publication.");
   }
@@ -1857,7 +1858,7 @@ function editPost(id){
  const p=state.posts.find(x=>x.id===id); if(!p||p.ownerId!==state.current)return;
  modal("Modifier la publication",`<form id="editPostForm" class="premium-form"><label>Texte<textarea id="editPostText">${esc(p.text||"")}</textarea></label><label>Visibilité<select id="editPostVisibility"><option ${p.visibility==="Public"?"selected":""}>Public</option><option ${p.visibility==="Amis"?"selected":""}>Amis</option><option ${p.visibility==="Sélection personnalisée"?"selected":""}>Sélection personnalisée</option><option ${p.visibility==="Moi uniquement"?"selected":""}>Moi uniquement</option></select></label><button class="btn primary wide">Enregistrer</button></form>`);
  $("editPostForm").onsubmit=async e=>{e.preventDefault();p.text=$("editPostText").value.trim();p.visibility=$("editPostVisibility").value;p.editedAt=new Date().toISOString();
-   if(supabaseReady()){const {error}=await SB.from("posts").update({text:p.text,visibility:postVisibilityToDb(p.visibility),edited_at:p.editedAt}).eq("id",p.id).eq("owner_id",state.current);if(error)return toast("Modification impossible : "+(error.message||"Supabase"));}
+   if(supabaseReady()){const {error}=await SB.from("posts").update({content:p.text,visibility:postVisibilityToDb(p.visibility),updated_at:p.editedAt}).eq("id",p.id).eq("user_id",state.current);if(error)return toast("Modification impossible : "+(error.message||"Supabase"));}
    save();closeModal();render();toast("Publication modifiée");};
 }
 function postMore(id){
