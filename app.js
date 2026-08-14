@@ -126,6 +126,7 @@ async function startTafaRealtime(){
     ['story_reactions','story-reaction-change',()=>loadSupabaseStories().then(render)],
     ['story_replies','story-reply-change',()=>loadSupabaseStories().then(render)],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
+    ['message_attachments','message-attachment-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)],
     ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)]
   ];
@@ -168,7 +169,7 @@ async function loadSupabaseMessages(){
       const {data:ms,error:me}=await SB.rpc('tafa_get_conversation_messages',{p_conversation_ids:conversationIds});
       if(me) throw me;
 
-      state.messages=(ms||[]).map(m=>({
+      const baseMessages=(ms||[]).map(m=>({
         id:m.id,
         conversationId:m.conversation_id,
         from:m.sender_id,
@@ -183,10 +184,31 @@ async function loadSupabaseMessages(){
         mediaUrl:m.media_url||null,
         fileName:m.file_name||null,
         fileSize:m.file_size||null,
-        mimeType:m.mime_type||null,
-        file:m.media_url?{id:m.id,url:m.media_url,name:m.file_name||'Fichier',size:m.file_size||0,type:m.mime_type||m.message_type||'application/octet-stream'}:null,
-        files:m.media_url?[{id:m.id,url:m.media_url,name:m.file_name||'Fichier',size:m.file_size||0,type:m.mime_type||m.message_type||'application/octet-stream'}]:[]
+        mimeType:m.mime_type||null
       }));
+      let attachments=[];
+      try{
+        const {data:ad,error:ae}=await SB.rpc('tafa_get_message_attachments',{p_message_ids:baseMessages.map(m=>m.id)});
+        if(!ae) attachments=(ad||[]).map(x=>typeof x==='string'?JSON.parse(x):x);
+      }catch(attErr){ console.warn('Message attachments load:',attErr); }
+      const byMessage=new Map();
+      attachments.forEach(a=>{
+        const mid=a.message_id||a.messageid||a.msg_id;
+        if(!mid)return;
+        const url=a.file_url||a.url||a.media_url||a.attachment_url||null;
+        const name=a.file_name||a.name||a.filename||'Fichier';
+        const type=a.file_type||a.mime_type||a.type||'application/octet-stream';
+        const size=Number(a.file_size??a.size??a.size_bytes??0);
+        const path=a.storage_path||a.path||a.file_path||null;
+        const f={id:a.id||null,url,path,name,size,type,messageType:type.startsWith('audio/')?'audio':'file'};
+        if(!byMessage.has(mid))byMessage.set(mid,[]);
+        byMessage.get(mid).push(f);
+      });
+      state.messages=baseMessages.map(m=>{
+        const fs=byMessage.get(m.id)||[];
+        if(!fs.length && m.mediaUrl) fs.push({id:m.id,url:m.mediaUrl,name:m.fileName||'Fichier',size:Number(m.fileSize||0),type:m.mimeType||m.messageType||'application/octet-stream',messageType:String(m.mimeType||'').startsWith('audio/')?'audio':'file'});
+        return {...m,files:fs,file:fs[0]||null};
+      });
     }else{
       state.messages=[];
     }
@@ -2669,6 +2691,19 @@ function newConversation(){
     closeModal(); render();
   });};
 }
+async function persistMessageAttachment(messageId,uploaded){
+  if(!supabaseReady()||!messageId||!uploaded) return;
+  const {error}=await SB.rpc('tafa_attach_message',{
+    p_message_id:messageId,
+    p_file_url:uploaded.url||null,
+    p_file_name:uploaded.name||'Fichier',
+    p_file_type:uploaded.type||'application/octet-stream',
+    p_file_size:Number(uploaded.size||0),
+    p_storage_path:uploaded.path||null
+  });
+  if(error) throw error;
+}
+
 async function sendMessage(convId,text,fileOrFiles){
   const c=state.conversations.find(x=>x.id===convId);
   if(!c || !state.current) return;
@@ -2683,7 +2718,10 @@ async function sendMessage(convId,text,fileOrFiles){
     for(const raw of rawFiles){
       const uploaded=await uploadMessageFile(raw);
       const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text:'',files:[{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'}],file:{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'},read:false,createdAt:new Date().toISOString(),messageType:uploaded.type.startsWith('audio/')?'audio':'file',mediaUrl:uploaded.url,fileName:uploaded.name,fileSize:uploaded.size,mimeType:uploaded.type};
-      if(supabaseReady()) await persistMessage(m); else state.messages.push(m);
+      if(supabaseReady()) {
+        await persistMessage(m);
+        await persistMessageAttachment(m.id,uploaded);
+      } else state.messages.push(m);
     }
     if(supabaseReady()) await loadSupabaseMessages();
     if(to) await notify(to,'message',`${displayName(me())} vous a envoyé un message.`);
