@@ -1,3 +1,19 @@
+
+/* TAFA_ADMIN_CLICK_FIX
+   The admin menu must remain clickable even when a parent menu handler
+   consumes the click. */
+document.addEventListener("click",function(e){
+  const el=e.target.closest?.('[data-action="admin"], [data-route="admin"], [data-page="admin"]');
+  if(!el || !isAdminAccount()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  try{
+    route="admin";
+    if(typeof render==="function") render();
+    else if(typeof renderApp==="function") renderApp();
+  }catch(err){ console.error("Admin navigation error",err); }
+},true);
+
 (() => {
 "use strict";
 
@@ -2427,8 +2443,8 @@ function renderAdmin(){
       <div class="admin-panel">
         <div class="admin-panel-title"><div><b>Actions rapides</b><small>Administration</small></div></div>
         <div class="admin-actions">
-          <button class="admin-action" data-action="adminUsers">👥<span>Utilisateurs<small>Gérer les comptes</small></span></button>
-          <button class="admin-action" data-action="adminReports">🛡️<span>Modération<small>${pendingReports} en attente</small></span></button>
+          <button type="button" class="admin-action" data-action="adminUsers">👥<span>Utilisateurs<small>Gérer les comptes</small></span></button>
+          <button type="button" class="admin-action" data-action="adminReports">🛡️<span>Modération<small>${pendingReports} en attente</small></span></button>
           <button class="admin-action" data-action="adminBadges">🔵<span>Badges bleus<small>${pendingBadges} demandes</small></span></button>
           <button class="admin-action" data-action="adminPosts">📝<span>Publications<small>Modérer les contenus</small></span></button>
         </div>
