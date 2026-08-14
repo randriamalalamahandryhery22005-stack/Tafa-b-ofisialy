@@ -25,7 +25,7 @@
       }
     );
 
-    window.TAFA_SUPABASE_CONFIG = { url: SUPABASE_URL };
+    window.TAFA_SUPABASE_CONFIG = { url: SUPABASE_URL, key: SUPABASE_PUBLISHABLE_KEY };
   } catch (e) {
     console.error("Supabase config:", e);
     window.supabaseClient = null;
