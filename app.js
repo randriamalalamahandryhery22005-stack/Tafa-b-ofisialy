@@ -251,16 +251,57 @@ async function persistMessage(m){
   if(error) throw error;
   return m;
 }
+function messageMimeType(file){
+  const given=String(file?.type||'').trim();
+  if(given) return given;
+  const name=String(file?.name||'').toLowerCase();
+  const map={
+    '.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp',
+    '.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.m4v':'video/mp4',
+    '.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg','.m4a':'audio/mp4',
+    '.pdf':'application/pdf','.zip':'application/zip','.rar':'application/vnd.rar',
+    '.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls':'application/vnd.ms-excel','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.ppt':'application/vnd.ms-powerpoint','.pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.txt':'text/plain','.csv':'text/csv','.json':'application/json','.apk':'application/vnd.android.package-archive'
+  };
+  const ext=Object.keys(map).find(x=>name.endsWith(x));
+  return ext?map[ext]:'application/octet-stream';
+}
+
 async function uploadMessageFile(file){
   if(!supabaseReady()||!state.current||!file) throw new Error('Fichier invalide.');
   const max=100*1024*1024;
-  if(file.size>max) throw new Error('Fichier trop volumineux. Maximum : 100 Mo.');
-  const safeName=String(file.name||'fichier').replace(/[^a-zA-Z0-9._-]+/g,'_');
+  if(Number(file.size||0)>max) throw new Error('Fichier trop volumineux. Maximum : 100 Mo.');
+
+  const safeName=String(file.name||'fichier')
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-zA-Z0-9._-]+/g,'_').replace(/^[-_.]+/,'') || 'fichier';
+  const mime=messageMimeType(file);
   const path=`${state.current}/${Date.now()}_${crypto.randomUUID()}_${safeName}`;
-  const {error}=await SB.storage.from('messages').upload(path,file,{contentType:file.type||'application/octet-stream',upsert:false});
-  if(error) throw error;
-  const {data}=SB.storage.from('messages').getPublicUrl(path);
-  return {url:data.publicUrl,path,name:file.name||safeName,size:file.size||0,type:file.type||'application/octet-stream'};
+
+  const bucket=SB.storage.from('messages');
+  const {data:uploaded,error}=await bucket.upload(path,file,{
+    contentType:mime,
+    upsert:false,
+    cacheControl:'3600'
+  });
+  if(error){
+    console.error('[TAFA MESSAGES STORAGE]',error);
+    throw new Error(`Upload fichier refusé : ${error.message||'erreur Storage'}`);
+  }
+  if(!uploaded?.path) throw new Error('Upload terminé mais le chemin du fichier est introuvable.');
+
+  const {data}=bucket.getPublicUrl(uploaded.path);
+  if(!data?.publicUrl) throw new Error('URL du fichier introuvable après upload.');
+
+  return {
+    url:data.publicUrl,
+    path:uploaded.path,
+    name:file.name||safeName,
+    size:Number(file.size||0),
+    type:mime
+  };
 }
 
 
@@ -2641,7 +2682,7 @@ async function sendMessage(convId,text,fileOrFiles){
     }
     for(const raw of rawFiles){
       const uploaded=await uploadMessageFile(raw);
-      const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text:'',files:[{id:'',url:uploaded.url,name:uploaded.name,size:uploaded.size,type:uploaded.type}],file:{url:uploaded.url,name:uploaded.name,size:uploaded.size,type:uploaded.type},read:false,createdAt:new Date().toISOString(),messageType:uploaded.type.startsWith('audio/')?'audio':'file',mediaUrl:uploaded.url,fileName:uploaded.name,fileSize:uploaded.size,mimeType:uploaded.type};
+      const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text:'',files:[{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'}],file:{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'},read:false,createdAt:new Date().toISOString(),messageType:uploaded.type.startsWith('audio/')?'audio':'file',mediaUrl:uploaded.url,fileName:uploaded.name,fileSize:uploaded.size,mimeType:uploaded.type};
       if(supabaseReady()) await persistMessage(m); else state.messages.push(m);
     }
     if(supabaseReady()) await loadSupabaseMessages();
