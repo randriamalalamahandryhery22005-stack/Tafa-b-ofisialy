@@ -127,6 +127,7 @@ async function startTafaRealtime(){
   if(!supabaseReady()||!state.current) return;
   stopTafaRealtime();
   await loadSupabaseNotifications();
+  await loadSupabaseGroups();
   startCallSignalChannel();
 
   // V18.4 REALTIME: each channel is scoped when possible to avoid
@@ -147,7 +148,13 @@ async function startTafaRealtime(){
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['message_attachments','message-attachment-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)],
-    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)]
+    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)],
+    ['groups','group-change',()=>loadSupabaseGroups().then(render)],
+    ['group_members','group-member-change',()=>loadSupabaseGroups().then(render)],
+    ['group_join_requests','group-request-change',()=>loadSupabaseGroups().then(render)],
+    ['group_polls','group-poll-change',()=>selectedGroupId?loadSupabaseGroupPolls(selectedGroupId).then(render):loadSupabaseGroups().then(render)],
+    ['group_poll_options','group-poll-option-change',()=>selectedGroupId?loadSupabaseGroupPolls(selectedGroupId).then(render):null],
+    ['group_poll_votes','group-poll-vote-change',()=>selectedGroupId?loadSupabaseGroupPolls(selectedGroupId).then(render):null]
   ];
 
   specs.forEach(([table,name,refresh,filter])=>{
@@ -1029,6 +1036,7 @@ async function loadSupabasePosts(){
   const visibilityFromDb=v=>({public:"Public",friends:"Amis",private:"Moi uniquement","public":"Public","friends":"Amis","private":"Moi uniquement",Public:"Public",Amis:"Amis","Moi uniquement":"Moi uniquement"}[String(v||"")] || (v||"Public"));
   state.posts=(data||[]).map(row=>({
     id:row.id, ownerId:row.owner_id || row.user_id, ownerType:"user",
+    groupId:row.group_id||null, publisherPageId:row.publisher_page_id||null,
     title:row.title||"Publication", text:row.text ?? row.content ?? "",
     media:row.media_url||"", mediaType:(row.media_type||"text"),
     visibility:visibilityFromDb(row.visibility),
@@ -1340,6 +1348,7 @@ const PROFILE_CATS = PAGE_CATS;
 
 let state = loadState();
 let route = state.current ? "home" : "home";
+let selectedGroupId = null;
 let adminAuthUserId = null;
 let searchFilter = "Tout";
 let activeConversation = null;
@@ -1529,7 +1538,7 @@ function renderRoute(){
     case"home":return renderHome();case"friends":return renderFriends();case"search":return renderSearch();case"profile":return renderProfile(findUser(profileViewingId||state.current)||me());
     case"notifications":return renderNotifications();case"messages":return renderMessages();case"pages":return renderPages();
     case"groups":return renderGroups();case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
-    case"events":return renderEvents();case"menu":return renderMenu();case"settings":return renderSettings();case"privacy":return renderPrivacy();
+    case"events":return renderEvents();case"groupView":return renderGroup(selectedGroupId);case"menu":return renderMenu();case"settings":return renderSettings();case"privacy":return renderPrivacy();
     case"security":return renderSecurity();case"accounts":return renderAccounts();case"language":return renderLanguage();case"accessibility":return renderAccessibility();
     case"devices":return renderDevices();case"payments":return renderPayments();case"badge":return renderBadge();case"ads":return renderAds();
     case"activity":return renderActivity();case"help":return renderHelp();case"terms":return renderTerms();case"about":return renderAbout();case"admin":return renderAdmin();
@@ -2001,6 +2010,7 @@ function renderPageView(id){
   </section>`;
 }
 function renderGroup(groupId){
+  if(groupId && (!state.groupPolls || !state.groupPolls.some(p=>String(p.group_id)===String(groupId)))) loadSupabaseGroupPolls(groupId).then(()=>{if(route==="groupView"&&selectedGroupId===groupId)render()}).catch(()=>{});
   const g=(state.groups||[]).find(x=>String(x.id)===String(groupId));
   if(!g) return `${routeBackBar("Groupes","groups")}<section class="group-premium-empty"><h2>Groupe introuvable</h2><p>Ce groupe n'existe plus ou n'est pas disponible.</p></section>`;
 
@@ -2014,6 +2024,7 @@ function renderGroup(groupId){
   const cover=g.cover_url||g.coverUrl||"";
   const avatar=g.avatar_url||g.avatarUrl||"";
   const mediaPosts=posts.filter(p=>p.media_url||p.mediaUrl||p.media_type||p.mediaType);
+  const polls=(state.groupPolls||[]).filter(p=>String(p.group_id)===String(g.id));
 
   const postCard=posts.map(p=>{
     const u=(state.users||[]).find(x=>String(x.id)===String(p.user_id||p.owner_id||""))||{};
@@ -2030,6 +2041,15 @@ function renderGroup(groupId){
     </article>`;
   }).join("") || `<div class="group-empty-feed">Aucune publication dans ce groupe pour le moment.</div>`;
 
+  const pollCards=polls.map(p=>{
+    const total=(p.votes||[]).length;
+    return `<article class="group-post-card group-poll-card"><div class="group-post-head"><div class="group-mini-avatar">📊</div><div><b>Sondage</b><small>${escapeHtml(p.created_at||"")}</small></div></div><h3>${escapeHtml(p.question||"")}</h3>
+      <div class="group-poll-options">${(p.options||[]).map(o=>{
+        const count=(p.votes||[]).filter(v=>String(v.option_id)===String(o.id)).length;
+        const pct=total?Math.round(count*100/total):0;
+        return `<button type="button" class="group-poll-option" data-group-vote="${escapeHtml(o.id)}" data-poll-id="${escapeHtml(p.id)}"><span>${escapeHtml(o.option_text)}</span><b>${pct}%</b><i style="width:${pct}%"></i></button>`;
+      }).join("")}</div><small>${total} vote${total>1?"s":""}</small></article>`;
+  }).join("");
   return `${routeBackBar("Groupes","groups")}
   <section class="group-premium">
     <div class="group-cover" ${cover?`style="background-image:url('${escapeHtml(cover)}')"`:""}>
@@ -2063,7 +2083,7 @@ function renderGroup(groupId){
           </div>
           <input type="file" hidden data-group-file-input data-group-id="${escapeHtml(g.id)}" multiple>
         </div>`:""}
-        <div class="group-feed">${postCard}</div>
+        <div class="group-feed">${pollCards}${postCard}</div>
       </main>
 
       <aside>
@@ -2076,7 +2096,7 @@ function renderGroup(groupId){
           <div class="side-title"><b>Membres</b><button type="button" data-group-tab="members">Voir tous</button></div>
           <div class="group-member-stack">${members.slice(0,8).map(u=>`<span title="${escapeHtml(u.name||u.username||"Membre")}">${escapeHtml(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</span>`).join("")||"Aucun membre"}</div>
         </div>
-        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${escapeHtml(g.id)}">Gérer le groupe</button></div>`:""}
+        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${escapeHtml(g.id)}">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leave-group" data-group-id="${escapeHtml(g.id)}">Quitter le groupe</button></div>`:""}
       </aside>
     </div>
   </section>`;
@@ -3371,16 +3391,232 @@ function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de
   $("pageForm").onsubmit=e=>{e.preventDefault();const p={id:uid("page"),ownerId:state.current,name:$("pName").value.trim(),category:$("pCat").value,username:$("pUser").value.trim(),description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:"",cover:"",createdAt:new Date().toISOString()};state.pages.push(p);save();closeModal();render();toast("Page créée");};
 }
 function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=e=>{e.preventDefault();p.name=$("epName").value;p.description=$("epDesc").value;p.category=$("epCat").value;save();closeModal();render();};}
-function createGroup(){
-  modal("Créer un groupe",`<form id="groupForm" class="premium-form"><label>Nom<input id="gName" maxlength="80" required></label><label>Confidentialité<select id="gPrivacy"><option value="Public">Public</option><option value="Privé">Privé</option></select></label><label>Description<textarea id="gDesc" maxlength="500" placeholder="Décrivez votre groupe"></textarea></label><button type="submit" class="btn primary wide">Créer le groupe</button></form>`);
-  $("groupForm").onsubmit=e=>{e.preventDefault();const name=$("gName").value.trim();if(!name)return toast("Le nom du groupe est obligatoire.");state.groups=[...(state.groups||[]),{id:uid("g"),name,privacy:$("gPrivacy").value,description:$("gDesc").value.trim(),members:[state.current],ownerId:state.current,createdAt:new Date().toISOString()}];save();closeModal();render();toast("Groupe créé avec succès.");};
-}
-function joinGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g)return toast("Groupe introuvable.");g.members=Array.isArray(g.members)?g.members:[];if(g.members.includes(state.current))return toast("Vous êtes déjà membre.");if(String(g.privacy||"Public")==="Privé")return toast("Ce groupe est privé.");g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe.");}
-function leaveGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g)return;if(g.ownerId===state.current)return toast("Le propriétaire ne peut pas quitter son groupe.");g.members=(g.members||[]).filter(x=>x!==state.current);save();render();toast("Vous avez quitté le groupe.");}
-function viewGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g)return toast("Groupe introuvable.");const members=(g.members||[]).map(findUser).filter(Boolean);modal(esc(g.name||"Groupe"),`<div class="group-detail-fixed"><span class="type-pill">${esc(g.privacy||"Public")}</span><p>${esc(g.description||"Communauté Tafaß")}</p><h3>${members.length} membres</h3><div class="group-members-fixed">${members.slice(0,30).map(u=>`<div class="group-member-fixed">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>${u.id===g.ownerId?"Administrateur":"Membre"}</small></span></div>`).join("")||"<span>Aucun membre</span>"}</div><button type="button" class="btn primary wide" data-action="closeModal">Fermer</button></div>`);}
-function manageGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g||g.ownerId!==state.current)return toast("Accès refusé.");modal("Gérer le groupe",`<div class="premium-options"><button class="menu-card-premium" data-action="viewGroup" data-id="${esc(id)}"><span>◉</span><strong>Voir le groupe</strong></button><button class="menu-card-premium" data-action="deleteGroup" data-id="${esc(id)}"><span>🗑</span><strong>Supprimer le groupe</strong></button></div>`);}
-function deleteGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g||g.ownerId!==state.current)return toast("Vous ne pouvez pas supprimer ce groupe.");state.groups=state.groups.filter(x=>x.id!==id);save();closeModal();render();toast("Groupe supprimé.");}
 
+async function loadSupabaseGroups(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const {data:groups,error}=await SB.from("groups").select("*").order("created_at",{ascending:false});
+    if(error) throw error;
+
+    const {data:members,error:meErr}=await SB.from("group_members").select("*");
+    if(meErr) console.warn("group_members:",meErr.message);
+
+    const rows=groups||[];
+    const mems=members||[];
+    const userIds=[...new Set(mems.map(m=>m.user_id).filter(Boolean))];
+    if(userIds.length){
+      const {data:profiles}=await SB.from("profiles").select("*").in("id",userIds);
+      const map=new Map((state.users||[]).map(u=>[u.id,u]));
+      (profiles||[]).forEach(p=>map.set(p.id,profileFromRow(p)));
+      state.users=[...map.values()];
+    }
+
+    state.groups=rows.map(g=>{
+      const gm=mems.filter(m=>String(m.group_id)===String(g.id));
+      return {
+        id:g.id,name:g.name,category:g.category,privacy:g.privacy,
+        description:g.description||"",rules:g.rules||"",
+        avatar_url:g.avatar_url||"",cover_url:g.cover_url||"",
+        member_count:Number(g.member_count||0),owner_id:g.owner_id,
+        created_at:g.created_at,updated_at:g.updated_at,
+        ownerId:g.owner_id,
+        members:gm.filter(m=>m.status==="active").map(m=>m.user_id),
+        memberRows:gm,
+        is_member:gm.some(m=>String(m.user_id)===String(state.current)&&m.status==="active"),
+        my_role:(gm.find(m=>String(m.user_id)===String(state.current))||{}).role||null
+      };
+    });
+    save();
+  }catch(e){ console.warn("Supabase groups:",e?.message||e); }
+}
+
+async function loadSupabaseGroupPolls(groupId){
+  if(!supabaseReady()||!groupId) return;
+  try{
+    const {data:polls,error}=await SB.from("group_polls").select("*").eq("group_id",groupId).order("created_at",{ascending:false});
+    if(error) throw error;
+    const ids=(polls||[]).map(p=>p.id);
+    let options=[];
+    if(ids.length){
+      const {data:opts,error:oe}=await SB.from("group_poll_options").select("*").in("poll_id",ids).order("position",{ascending:true});
+      if(!oe) options=opts||[];
+    }
+    let votes=[];
+    if(ids.length){
+      const {data:vs,error:ve}=await SB.from("group_poll_votes").select("*").in("poll_id",ids);
+      if(!ve) votes=vs||[];
+    }
+    state.groupPolls=(polls||[]).map(p=>({
+      ...p,
+      options:options.filter(o=>String(o.poll_id)===String(p.id)),
+      votes:votes.filter(v=>String(v.poll_id)===String(p.id))
+    }));
+    save();
+  }catch(e){ console.warn("Supabase group polls:",e?.message||e); }
+}
+
+async function createSupabaseGroup(name,privacy,description){
+  if(!supabaseReady()||!state.current) throw new Error("Session Supabase introuvable.");
+  const auth=(await SB.auth.getUser()).data?.user;
+  if(!auth?.id) throw new Error("Session Supabase introuvable.");
+  const {data:g,error}=await SB.from("groups").insert({
+    owner_id:auth.id,name,privacy,description:description||"",category:"Général",rules:""
+  }).select("*").single();
+  if(error) throw error;
+  const {error:memberError}=await SB.from("group_members").insert({
+    group_id:g.id,user_id:auth.id,role:"owner",status:"active"
+  });
+  if(memberError){
+    try{await SB.from("groups").delete().eq("id",g.id);}catch(_){}
+    throw memberError;
+  }
+  await loadSupabaseGroups();
+  return g;
+}
+
+async function joinSupabaseGroup(id){
+  if(!supabaseReady()||!state.current) throw new Error("Session Supabase introuvable.");
+  const g=(state.groups||[]).find(x=>String(x.id)===String(id));
+  if(!g) throw new Error("Groupe introuvable.");
+  if(g.is_member) return;
+  if(String(g.privacy)==="Privé"){
+    const {error}=await SB.from("group_join_requests").upsert(
+      {group_id:id,user_id:state.current,status:"pending",updated_at:new Date().toISOString()},
+      {onConflict:"group_id,user_id"}
+    );
+    if(error) throw error;
+    toast("Demande envoyée au propriétaire.");
+  }else{
+    const {error}=await SB.from("group_members").upsert(
+      {group_id:id,user_id:state.current,role:"member",status:"active"},
+      {onConflict:"group_id,user_id"}
+    );
+    if(error) throw error;
+    toast("Vous avez rejoint le groupe.");
+  }
+  await loadSupabaseGroups(); render();
+}
+
+async function leaveSupabaseGroup(id){
+  if(!supabaseReady()||!state.current) throw new Error("Session Supabase introuvable.");
+  const g=(state.groups||[]).find(x=>String(x.id)===String(id));
+  if(g?.owner_id===state.current) throw new Error("Le propriétaire ne peut pas quitter son groupe.");
+  const {error}=await SB.from("group_members").delete().eq("group_id",id).eq("user_id",state.current);
+  if(error) throw error;
+  await loadSupabaseGroups(); render();
+  toast("Vous avez quitté le groupe.");
+}
+
+async function deleteSupabaseGroup(id){
+  if(!supabaseReady()||!state.current) throw new Error("Session Supabase introuvable.");
+  const {error}=await SB.from("groups").delete().eq("id",id).eq("owner_id",state.current);
+  if(error) throw error;
+  await loadSupabaseGroups(); selectedGroupId=null; route="groups"; render();
+  toast("Groupe supprimé.");
+}
+
+async function createGroupPost(groupId,text,file){
+  if(!supabaseReady()||!state.current) throw new Error("Session Supabase introuvable.");
+  const g=(state.groups||[]).find(x=>String(x.id)===String(groupId));
+  if(!g?.is_member) throw new Error("Vous devez être membre du groupe.");
+
+  let media_url=null, media_type="text";
+  if(file){
+    const uploaded=await uploadMessageFile(file,(p)=>{});
+    media_url=uploaded.url;
+    const mime=String(uploaded.type||"").toLowerCase();
+    media_type=mime.startsWith("image/")?"image":mime.startsWith("video/")?"video":mime.startsWith("audio/")?"audio":"file";
+  }
+  const payload={
+    id:crypto.randomUUID(),user_id:state.current,owner_id:state.current,
+    content:String(text||""),media_url,media_type,
+    visibility:"Public",group_id:groupId
+  };
+  const {data,error}=await SB.from("posts").insert(payload).select("*").single();
+  if(error) throw error;
+  return data;
+}
+
+async function createGroupPoll(groupId,question,options){
+  if(!supabaseReady()||!state.current) throw new Error("Session Supabase introuvable.");
+  const g=(state.groups||[]).find(x=>String(x.id)===String(groupId));
+  if(!g?.is_member) throw new Error("Vous devez être membre du groupe.");
+  const clean=options.map(x=>String(x).trim()).filter(Boolean).slice(0,8);
+  if(!String(question||"").trim()||clean.length<2) throw new Error("Un sondage nécessite une question et au moins 2 choix.");
+  const {data:poll,error}=await SB.from("group_polls").insert({
+    group_id:groupId,creator_id:state.current,question:String(question).trim()
+  }).select("*").single();
+  if(error) throw error;
+  const {error:oe}=await SB.from("group_poll_options").insert(
+    clean.map((option,i)=>({poll_id:poll.id,option_text:option,position:i}))
+  );
+  if(oe) throw oe;
+  await loadSupabaseGroupPolls(groupId);
+}
+
+async function voteGroupPoll(pollId,optionId){
+  if(!supabaseReady()||!state.current) return;
+  const {error}=await SB.from("group_poll_votes").upsert(
+    {poll_id:pollId,option_id:optionId,user_id:state.current},
+    {onConflict:"poll_id,user_id"}
+  );
+  if(error) throw error;
+  const p=(state.groupPolls||[]).find(x=>String(x.id)===String(pollId));
+  if(p) await loadSupabaseGroupPolls(p.group_id);
+  render();
+}
+
+function renderGroups(){
+  const groups=(state.groups||[]);
+  return `${routeBackBar("Menu","menu")}<section class="groups-hub premium-page">
+    <div class="groups-hub-head"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Vos communautés synchronisées en temps réel.</p></div>
+      <button type="button" class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
+    <div class="groups-grid">
+      ${groups.map(g=>`<article class="group-list-card">
+        <div class="group-list-cover" ${g.cover_url?`style="background-image:url('${esc(g.cover_url)}')"`:""}><span>${g.privacy==="Privé"?"🔒":"🌐"}</span></div>
+        <div class="group-list-body"><h3>${esc(g.name)}</h3><p>${esc(g.description||"Communauté Tafaß")}</p><small>👥 ${Number(g.member_count||g.members?.length||0)} membres · ${esc(g.category||"Général")}</small>
+        <button type="button" class="btn primary wide" data-action="viewGroup" data-id="${esc(g.id)}">Voir le groupe</button></div>
+      </article>`).join("") || `<div class="card empty"><b>Aucun groupe</b><p>Créez votre première communauté.</p></div>`}
+    </div>
+  </section>`;
+}
+function createGroup(){
+  modal("Créer un groupe",`<form id="groupForm" class="premium-form">
+    <label>Nom<input id="gName" maxlength="80" required></label>
+    <label>Confidentialité<select id="gPrivacy"><option value="Public">Public</option><option value="Privé">Privé</option></select></label>
+    <label>Description<textarea id="gDesc" maxlength="1000" placeholder="Décrivez votre groupe"></textarea></label>
+    <button type="submit" class="btn primary wide">Créer le groupe</button>
+  </form>`);
+  $("groupForm").onsubmit=async e=>{
+    e.preventDefault();
+    const name=$("gName").value.trim(), privacy=$("gPrivacy").value, desc=$("gDesc").value.trim();
+    if(!name)return toast("Le nom du groupe est obligatoire.");
+    try{
+      await createSupabaseGroup(name,privacy,desc);
+      closeModal(); route="groups"; render(); toast("Groupe créé avec succès.");
+    }catch(err){toast("Création impossible : "+(err?.message||"erreur Supabase"));}
+  };
+}
+async function joinGroup(id){try{await joinSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
+async function leaveGroup(id){try{await leaveSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
+function viewGroup(id){
+  const g=(state.groups||[]).find(x=>String(x.id)===String(id));
+  if(!g)return toast("Groupe introuvable.");
+  selectedGroupId=id; route="groupView"; render();
+}
+function manageGroup(id){
+  const g=(state.groups||[]).find(x=>String(x.id)===String(id));
+  if(!g||String(g.owner_id)!==String(state.current))return toast("Accès refusé.");
+  modal("Gérer le groupe",`<div class="premium-options">
+    <button class="menu-card-premium" data-action="groupManageMembers" data-id="${esc(id)}"><span>👥</span><strong>Membres et rôles</strong></button>
+    <button class="menu-card-premium" data-action="deleteGroup" data-id="${esc(id)}"><span>🗑</span><strong>Supprimer le groupe</strong></button>
+    <button class="btn secondary wide" data-action="closeModal">Fermer</button>
+  </div>`);
+}
+async function deleteGroup(id){
+  if(!confirm("Supprimer définitivement ce groupe ?")) return;
+  try{await deleteSupabaseGroup(id);}catch(e){toast("Suppression impossible : "+(e?.message||"erreur"));}
+}
 async function changePassword(){
   modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Votre mot de passe est géré directement par Supabase Auth. Il n'est jamais enregistré dans le navigateur.</div><label>Mot de passe actuel<input id="oldPass" type="password" autocomplete="current-password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" autocomplete="new-password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
   $("passwordChangeForm").onsubmit=async e=>{
@@ -3861,7 +4097,66 @@ async function createAccount(){
   }finally{
     setButton(originalText,false);
   }
-}async function boot(){
+}
+document.addEventListener("click",async e=>{
+  const join=e.target.closest?.('[data-action="join-group"]');
+  if(join){e.preventDefault(); await joinGroup(join.dataset.groupId); return;}
+  const view=e.target.closest?.('[data-action="viewGroup"]');
+  if(view){e.preventDefault(); viewGroup(view.dataset.id); return;}
+  const leave=e.target.closest?.('[data-action="leave-group"]');
+  if(leave){e.preventDefault(); await leaveGroup(leave.dataset.groupId); return;}
+  const publish=e.target.closest?.('[data-group-publish]');
+  if(publish){
+    e.preventDefault();
+    const gid=publish.dataset.groupPublish;
+    const box=document.querySelector(`[data-group-post-content][data-group-id="${CSS.escape(gid)}"]`);
+    const input=document.querySelector(`[data-group-file-input][data-group-id="${CSS.escape(gid)}"]`);
+    const file=input?.files?.[0]||null;
+    publish.disabled=true;
+    try{
+      await createGroupPost(gid,box?.value?.trim()||"",file);
+      if(box)box.value="";
+      if(input)input.value="";
+      await loadSupabasePosts(); render(); toast("Publication envoyée.");
+    }catch(err){toast("Publication impossible : "+(err?.message||"erreur"));}
+    finally{publish.disabled=false;}
+    return;
+  }
+  const pick=e.target.closest?.('[data-group-pick]');
+  if(pick){
+    e.preventDefault();
+    const input=document.querySelector(`[data-group-file-input][data-group-id="${CSS.escape(pick.dataset.groupId)}"]`);
+    if(input) input.click();
+    return;
+  }
+  const poll=e.target.closest?.('[data-group-poll]');
+  if(poll){
+    e.preventDefault();
+    const gid=poll.dataset.groupPoll;
+    modal("Créer un sondage",`<form id="groupPollForm" class="premium-form">
+      <label>Question<textarea id="pollQuestion" required maxlength="300"></textarea></label>
+      <label>Choix 1<input id="poll1" required></label>
+      <label>Choix 2<input id="poll2" required></label>
+      <label>Choix 3<input id="poll3"></label>
+      <label>Choix 4<input id="poll4"></label>
+      <button class="btn primary wide">Publier le sondage</button>
+    </form>`);
+    $("groupPollForm").onsubmit=async ev=>{
+      ev.preventDefault();
+      const opts=["poll1","poll2","poll3","poll4"].map(id=>$(id)?.value||"");
+      try{await createGroupPoll(gid,$("pollQuestion").value,opts);closeModal();render();toast("Sondage publié en temps réel.");}
+      catch(err){toast("Sondage impossible : "+(err?.message||"erreur"));}
+    };
+    return;
+  }
+  const vote=e.target.closest?.('[data-group-vote]');
+  if(vote){
+    e.preventDefault();
+    try{await voteGroupPoll(vote.dataset.pollId,vote.dataset.groupVote);}catch(err){toast("Vote impossible : "+(err?.message||"erreur"));}
+    return;
+  }
+});
+async function boot(){
   try{applyTheme();}catch(e){console.error(e)}
   try{initAuth();}catch(e){console.error("initAuth:",e)}
   try{setupGlobal();}catch(e){console.error("setupGlobal:",e)}
