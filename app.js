@@ -195,18 +195,23 @@ async function loadSupabaseMessages(){
       attachments.forEach(a=>{
         const mid=a.message_id||a.messageid||a.msg_id;
         if(!mid)return;
-        const url=a.file_url||a.url||a.media_url||a.attachment_url||null;
         const name=a.file_name||a.name||a.filename||'Fichier';
-        const type=a.file_type||a.mime_type||a.type||'application/octet-stream';
-        const size=Number(a.file_size??a.size??a.size_bytes??0);
         const path=a.storage_path||a.path||a.file_path||null;
+        const rawType=a.file_type||a.mime_type||a.type||'';
+        const type=messageFileMime({name,type:rawType});
+        const directUrl=a.file_url||a.url||a.media_url||a.attachment_url||null;
+        const url=directUrl || (path && supabaseReady() ? (SB.storage.from('messages').getPublicUrl(path)?.data?.publicUrl||null) : null);
+        const size=Number(a.file_size??a.size??a.size_bytes??0);
         const f={id:a.id||null,url,path,name,size,type,messageType:type.startsWith('audio/')?'audio':'file'};
         if(!byMessage.has(mid))byMessage.set(mid,[]);
         byMessage.get(mid).push(f);
       });
       state.messages=baseMessages.map(m=>{
         const fs=byMessage.get(m.id)||[];
-        if(!fs.length && m.mediaUrl) fs.push({id:m.id,url:m.mediaUrl,name:m.fileName||'Fichier',size:Number(m.fileSize||0),type:m.mimeType||m.messageType||'application/octet-stream',messageType:String(m.mimeType||'').startsWith('audio/')?'audio':'file'});
+        if(!fs.length && m.mediaUrl) {
+          const fallbackType=messageFileMime({name:m.fileName||'',type:m.mimeType||m.messageType||''});
+          fs.push({id:m.id,url:m.mediaUrl,name:m.fileName||'Fichier',size:Number(m.fileSize||0),type:fallbackType,messageType:fallbackType.startsWith('audio/')?'audio':'file'});
+        }
         return {...m,files:fs,file:fs[0]||null};
       });
     }else{
@@ -275,20 +280,37 @@ async function persistMessage(m){
 }
 function messageMimeType(file){
   const given=String(file?.type||'').trim();
-  if(given) return given;
   const name=String(file?.name||'').toLowerCase();
   const map={
-    '.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp',
-    '.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.m4v':'video/mp4',
-    '.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg','.m4a':'audio/mp4',
-    '.pdf':'application/pdf','.zip':'application/zip','.rar':'application/vnd.rar',
+    '.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.gif':'image/gif','.webp':'image/webp','.avif':'image/avif',
+    '.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.m4v':'video/mp4','.avi':'video/x-msvideo','.mkv':'video/x-matroska',
+    '.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg','.m4a':'audio/mp4','.aac':'audio/aac','.flac':'audio/flac',
+    '.pdf':'application/pdf','.zip':'application/zip','.rar':'application/vnd.rar','.7z':'application/x-7z-compressed',
     '.doc':'application/msword','.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xls':'application/vnd.ms-excel','.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.ppt':'application/vnd.ms-powerpoint','.pptx':'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    '.txt':'text/plain','.csv':'text/csv','.json':'application/json','.apk':'application/vnd.android.package-archive'
+    '.txt':'text/plain','.csv':'text/csv','.json':'application/json','.html':'text/html','.css':'text/css','.js':'text/javascript',
+    '.apk':'application/vnd.android.package-archive'
   };
   const ext=Object.keys(map).find(x=>name.endsWith(x));
-  return ext?map[ext]:'application/octet-stream';
+  // Browser MIME wins when it is useful; for empty/generic MIME use extension fallback.
+  if(given && given!=='application/octet-stream') return given;
+  return ext?map[ext]:(given||'application/octet-stream');
+}
+function messageFileMime(file){
+  const type=String(file?.type||file?.mimeType||'').toLowerCase().trim();
+  const name=String(file?.name||file?.fileName||'').toLowerCase();
+  if(type && type!=='application/octet-stream') return type;
+  return messageMimeType({type:'',name});
+}
+function messageFileUrl(file){
+  const direct=file?.data||file?.url||file?.mediaUrl||'';
+  if(direct) return direct;
+  const path=file?.path||file?.storagePath||'';
+  if(path && supabaseReady()){
+    try{return SB.storage.from('messages').getPublicUrl(path)?.data?.publicUrl||'';}catch(_){}
+  }
+  return '';
 }
 
 async function uploadMessageFile(file){
@@ -1640,21 +1662,26 @@ function renderConversationPremium(c){
 }
 function messageAttachmentHtml(file){
   if(!file)return "";
-  const src=file.data||file.url||file.mediaUrl||"";
+  const src=messageFileUrl(file);
   const safe=esc(src);
-  const type=String(file.type||'').toLowerCase();
-  if(!src) return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(file.name||"Fichier")}</b><small>${esc(type||"fichier")} · ${file.size?Math.ceil(file.size/1024)+" Ko":""}</small></div></div>`;
-  if(type.startsWith('image/'))return `<div class="chat-media-card"><img src="${safe}" alt="${esc(file.name||"Image")}"><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
-  if(type.startsWith('video/'))return `<div class="chat-media-card"><video src="${safe}" controls playsinline></video><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
-  if(type.startsWith('audio/')||file.messageType==='audio')return `<div class="chat-audio-card"><span>🎙</span><audio src="${safe}" controls preload="metadata"></audio><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩</button></div>`;
-  return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(file.name||"Fichier")}</b><small>${esc(type||"fichier")} · ${file.size?Math.ceil(file.size/1024)+" Ko":""}</small></div><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩</button></div>`;
+  const type=messageFileMime(file);
+  const name=String(file.name||"Fichier");
+  const ext=(name.match(/\\.([a-z0-9]+)$/i)?.[1]||'').toUpperCase();
+  const size=file.size?Math.ceil(Number(file.size)/1024)+" Ko":"";
+  const id=esc(file.id||"");
+  const download=src?`<button type="button" data-action="downloadMessageFile" data-id="${id}">⇩ Enregistrer</button>`:"";
+  if(!src) return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(name)}</b><small>${esc(type||ext||"fichier")} · ${esc(size)}</small></div></div>`;
+  if(type.startsWith('image/')) return `<div class="chat-media-card"><img src="${safe}" alt="${esc(name)}" loading="lazy"><div class="chat-file-actions">${download}</div></div>`;
+  if(type.startsWith('video/')) return `<div class="chat-media-card"><video src="${safe}" controls playsinline preload="metadata"></video><div class="chat-file-actions">${download}</div></div>`;
+  if(type.startsWith('audio/')||file.messageType==='audio') return `<div class="chat-audio-card"><span>🎙</span><audio src="${safe}" controls preload="metadata"></audio>${download}</div>`;
+  if(type==='application/pdf' || /\\.pdf$/i.test(name)) return `<div class="file-bubble chat-file-card chat-pdf-card"><span class="file-icon">📄</span><div><b>${esc(name)}</b><small>PDF${size?' · '+esc(size):''}</small></div><div class="chat-file-actions"><a href="${safe}" target="_blank" rel="noopener" class="file-open-btn">↗ Ouvrir</a>${download}</div><iframe src="${safe}#toolbar=0&navpanes=0" title="${esc(name)}" loading="lazy"></iframe></div>`;
+  return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(name)}</b><small>${esc(ext||type||"Fichier")}${size?' · '+esc(size):''}</small></div><div class="chat-file-actions">${download}</div></div>`;
 }
-
 function renderChatPremium(c){
   const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const msgs=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   return `<header class="chat-top-premium"><button class="icon-btn chat-back-btn" data-action="backToMessages" title="Retour">‹</button>${avatar(other||{name:c.name},"avatar") }<div><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${c.type==="group"?`${c.members.length} membres`:isOnline(other)?"En ligne":"Hors ligne"}</small></div><div class="chat-tools"><button class="icon-btn" data-action="voiceCall" data-id="${other?.id||c.id}" title="Appel vocal">☎</button><button class="icon-btn" data-action="voiceVideoCall" data-id="${other?.id||c.id}" title="Appel vidéo">▣</button></div></header>
   <div class="chat-body-premium">${msgs.length?msgs.map(m=>`<div class="bubble-premium ${m.from===state.current?"mine":""}">${m.files?.map(messageAttachmentHtml).join("")||messageAttachmentHtml(m.file)}${m.text?`<div>${esc(m.text)}</div>`:""}<small>${timeAgo(m.createdAt)}${m.from===state.current?` · <span class="message-status ${m.read?"read":"sent"}">${m.read?"✓✓":"✓"}</span>`:""}</small></div>`).join(""):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Aucun message</b><span>Écrivez votre premier message.</span></div>`}</div>
-  <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile" title="Photo, vidéo ou fichier">＋</button><button type="button" class="icon-btn voice-record-btn ${voiceRecording?'recording':''}" data-action="recordVoice" title="${voiceRecording?'Arrêter l’enregistrement':'Message vocal'}">${voiceRecording?'■':'🎙'}</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv,.json,.html,.css,.js"><div class="chat-input-shell"><input name="text" placeholder="Message"><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn" title="Envoyer">➤</button></form>`;
+  <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile" title="Photo, vidéo ou fichier">＋</button><button type="button" class="icon-btn voice-record-btn ${voiceRecording?'recording':''}" data-action="recordVoice" title="${voiceRecording?'Arrêter l’enregistrement':'Message vocal'}">${voiceRecording?'■':'🎙'}</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.7z,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv,.json,.html,.css,.js"><div class="chat-input-shell"><input name="text" placeholder="Message"><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn" title="Envoyer">➤</button></form>`;
 }
 function renderPages(){
   const mine=state.pages.filter(p=>p.ownerId===state.current);
@@ -2208,7 +2235,7 @@ async function handleAction(e,el){
   if(a==="followPage")return togglePageFollow(id);
   if(a==="messageUser"||a==="messagePage")return startConversation(id);
   if(a==="attachFile"){const form=el.closest("form");form?.querySelector("input[type=file]")?.click();return;}
-  if(a==="downloadMessageFile"){const all=state.messages.flatMap(m=>m.files||[m.file]).filter(Boolean);const f=all.find(x=>x.id===id);if(f?.data||f?.url){const a=document.createElement("a");a.href=f.data||f.url;a.download=f.name||"Tafaß-fichier";a.target="_blank";document.body.appendChild(a);a.click();a.remove();}else toast("Fichier introuvable");return;}
+  if(a==="downloadMessageFile"){const all=state.messages.flatMap(m=>m.files||[m.file]).filter(Boolean);const f=all.find(x=>String(x.id||'')===String(id));const src=messageFileUrl(f);if(src){const link=document.createElement("a");link.href=src;link.download=f?.name||"Tafaß-fichier";link.target="_blank";link.rel="noopener";document.body.appendChild(link);link.click();link.remove();}else toast("Fichier introuvable");return;}
   if(a==="viewProfile")return routeToProfile(id);
   if(a==="settingChoice"){
     const key=el.dataset.settingKey, label=el.dataset.settingLabel, opts=JSON.parse(el.dataset.settingOptions||"[]");
