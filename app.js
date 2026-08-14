@@ -2720,14 +2720,20 @@ function newConversation(){
 }
 async function persistMessageAttachment(messageId,uploaded){
   if(!supabaseReady()||!messageId||!uploaded) return;
-  const {error}=await SB.rpc('tafa_attach_message',{
-    p_message_id:messageId,
-    p_file_url:uploaded.url||null,
-    p_file_name:uploaded.name||'Fichier',
-    p_file_type:uploaded.type||'application/octet-stream',
-    p_file_size:Number(uploaded.size||0),
-    p_storage_path:uploaded.path||null
-  });
+  const payload={
+    message_id:messageId,
+    uploader_id:state.current,
+    file_url:uploaded.url||null,
+    file_name:uploaded.name||'Fichier',
+    file_type:uploaded.type||'application/octet-stream',
+    file_size:Number(uploaded.size||0),
+    storage_path:uploaded.path||null
+  };
+
+  // The current database has a NOT NULL uploader_id on message_attachments.
+  // Insert the complete attachment row directly instead of relying on an
+  // older RPC definition that may omit uploader_id.
+  const {error}=await SB.from('message_attachments').insert(payload);
   if(error) throw error;
 }
 
