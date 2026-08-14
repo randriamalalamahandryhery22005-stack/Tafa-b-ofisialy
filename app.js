@@ -689,6 +689,52 @@ async function removeFriend(id){
 }
 
 
+
+async function ensureOfficialProfile(authUser){
+  if(!supabaseReady() || !authUser?.id) return null;
+  const patch=officialAdminProfilePatch(authUser);
+
+  const base={
+    id:authUser.id,
+    email:String(authUser.email||patch.email||"").trim().toLowerCase(),
+    username:patch.username||null,
+    first_name:patch.first_name||null,
+    last_name:patch.last_name||null,
+    country:patch.country||null,
+    phone:patch.phone||null,
+    gender:patch.gender||null,
+    birth_date:patch.birth_date||null,
+    verified:isAdminAccount({id:authUser.id})
+  };
+
+  // Existing profile first: never overwrite user data for non-admins.
+  const {data:existing}=await SB.from("profiles").select("*").eq("id",authUser.id).maybeSingle();
+  if(existing){
+    if(isAdminAccount({id:authUser.id})){
+      const {data:updated,error}=await SB.from("profiles").update(base).eq("id",authUser.id).select("*").maybeSingle();
+      if(!error && updated) return updated;
+    }
+    return existing;
+  }
+
+  // Try the complete known profile shape, then progressively smaller payloads
+  // so a schema difference does not block Auth sign-in.
+  const variants=[
+    base,
+    {id:base.id,email:base.email,username:base.username,first_name:base.first_name,last_name:base.last_name},
+    {id:base.id,email:base.email,username:base.username},
+    {id:base.id,email:base.email}
+  ];
+  let lastError=null;
+  for(const payload of variants){
+    const {data,error}=await SB.from("profiles").insert(payload).select("*").maybeSingle();
+    if(!error && data) return data;
+    lastError=error;
+  }
+  console.warn("Profile creation failed after Auth succeeded:",lastError);
+  return null;
+}
+
 function profileFromRow(p){
   if(!p) return null;
   return {
@@ -1090,6 +1136,27 @@ function isAdminAccount(entity=me()){
   return String(entity.id||"") === String(adminAuthUserId);
 }
 function isAdminUser(entity){ return isAdminAccount(entity); }
+
+const TAFA_OFFICIAL_ADMIN_PROFILE = Object.freeze({
+  first_name:"Ofisialy",
+  last_name:"Tafaß",
+  username:"tafabofisialy",
+  country:"Madagascar",
+  phone:"+261336756185",
+  gender:"Homme",
+  birth_date:"2005-04-21",
+  email:"tafabofisialy@gmail.com"
+});
+
+function officialAdminProfilePatch(authUser){
+  if(!authUser || !isAdminAccount({id:authUser.id})) return {};
+  return {
+    ...TAFA_OFFICIAL_ADMIN_PROFILE,
+    id:authUser.id,
+    email:String(authUser.email||TAFA_OFFICIAL_ADMIN_PROFILE.email)
+  };
+}
+
 function adminizeUser(entity){
   if(!entity || !isAdminAccount(entity)) return entity;
   entity.verified=true;
