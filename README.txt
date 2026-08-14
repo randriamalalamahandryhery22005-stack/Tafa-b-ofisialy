@@ -33,7 +33,3 @@ TAFAß V3 — PROFIL + RECHERCHE
 - Ouverture d'un profil par ID avec rafraîchissement Supabase.
 - Bouton ami dynamique: Ajouter / Invitation envoyée / Accepter / Amis.
 - Aucun changement requis dans Auth, profiles, friendships ou friend_requests.
-
-
-V1.1.6.24 — PUBLICATIONS RPC FIX
-Exécuter PUBLICATIONS_V1.1.6.24_RPC_FIX.sql dans Supabase SQL Editor avant de tester les publications.
