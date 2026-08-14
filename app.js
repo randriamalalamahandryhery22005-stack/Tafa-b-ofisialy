@@ -190,7 +190,20 @@ async function loadSupabaseMessages(){
       try{
         const {data:ad,error:ae}=await SB.rpc('tafa_get_message_attachments',{p_message_ids:baseMessages.map(m=>m.id)});
         if(!ae) attachments=(ad||[]).map(x=>typeof x==='string'?JSON.parse(x):x);
-      }catch(attErr){ console.warn('Message attachments load:',attErr); }
+        else throw ae;
+      }catch(attErr){
+        console.warn('Message attachments RPC:',attErr?.message||attErr);
+        // Fallback for installations where the RPC is older or absent.
+        try{
+          const {data:direct,error:de}=await SB.from('message_attachments')
+            .select('*')
+            .in('message_id',baseMessages.map(m=>m.id))
+            .order('created_at',{ascending:true});
+          if(!de) attachments=direct||[];
+        }catch(directErr){
+          console.warn('Message attachments direct load:',directErr?.message||directErr);
+        }
+      }
       const byMessage=new Map();
       attachments.forEach(a=>{
         const mid=a.message_id||a.messageid||a.msg_id;
@@ -1669,7 +1682,11 @@ function messageAttachmentHtml(file){
   const ext=(name.match(/\\.([a-z0-9]+)$/i)?.[1]||'').toUpperCase();
   const size=file.size?Math.ceil(Number(file.size)/1024)+" Ko":"";
   const id=esc(file.id||"");
-  const download=src?`<button type="button" data-action="downloadMessageFile" data-id="${id}">⇩ Enregistrer</button>`:"";
+  const download=src
+    ? (file.id
+      ? `<button type="button" data-action="downloadMessageFile" data-id="${id}">⇩ Enregistrer</button>`
+      : `<a href="${safe}" download="${esc(name)}" target="_blank" rel="noopener" class="file-download-link">⇩ Enregistrer</a>`)
+    : "";
   if(!src) return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(name)}</b><small>${esc(type||ext||"fichier")} · ${esc(size)}</small></div></div>`;
   if(type.startsWith('image/')) return `<div class="chat-media-card"><img src="${safe}" alt="${esc(name)}" loading="lazy"><div class="chat-file-actions">${download}</div></div>`;
   if(type.startsWith('video/')) return `<div class="chat-media-card"><video src="${safe}" controls playsinline preload="metadata"></video><div class="chat-file-actions">${download}</div></div>`;
@@ -2719,22 +2736,31 @@ function newConversation(){
   });};
 }
 async function persistMessageAttachment(messageId,uploaded){
-  if(!supabaseReady()||!messageId||!uploaded) return;
-  const payload={
-    message_id:messageId,
-    uploader_id:state.current,
-    file_url:uploaded.url||null,
-    file_name:uploaded.name||'Fichier',
-    file_type:uploaded.type||'application/octet-stream',
-    file_size:Number(uploaded.size||0),
-    storage_path:uploaded.path||null
-  };
+  if(!supabaseReady()||!messageId||!uploaded) return {ok:false};
+  try{
+    const authUser=(await SB.auth.getUser())?.data?.user;
+    const uploaderId=authUser?.id||state.current;
+    if(!uploaderId) throw new Error('Utilisateur non connecté.');
 
-  // The current database has a NOT NULL uploader_id on message_attachments.
-  // Insert the complete attachment row directly instead of relying on an
-  // older RPC definition that may omit uploader_id.
-  const {error}=await SB.from('message_attachments').insert(payload);
-  if(error) throw error;
+    const payload={
+      message_id:messageId,
+      uploader_id:uploaderId,
+      file_url:uploaded.url||null,
+      file_name:uploaded.name||'Fichier',
+      file_type:uploaded.type||'application/octet-stream',
+      file_size:Number(uploaded.size||0),
+      storage_path:uploaded.path||null
+    };
+    const {data,error}=await SB.from('message_attachments').insert(payload).select('id').single();
+    if(error) throw error;
+    return {ok:true,id:data?.id||null};
+  }catch(error){
+    // The attachment bridge is secondary: the message itself already stores
+    // media_url/file_name/mime_type, so an RLS/schema difference must not make
+    // the whole media message fail.
+    console.warn('[TAFA MESSAGES ATTACHMENT]',error?.message||error);
+    return {ok:false,error};
+  }
 }
 
 async function sendMessage(convId,text,fileOrFiles){
@@ -2753,7 +2779,11 @@ async function sendMessage(convId,text,fileOrFiles){
       const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text:'',files:[{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'}],file:{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'},read:false,createdAt:new Date().toISOString(),messageType:uploaded.type.startsWith('audio/')?'audio':'file',mediaUrl:uploaded.url,fileName:uploaded.name,fileSize:uploaded.size,mimeType:uploaded.type};
       if(supabaseReady()) {
         await persistMessage(m);
-        await persistMessageAttachment(m.id,uploaded);
+        const attachmentResult=await persistMessageAttachment(m.id,uploaded);
+        if(attachmentResult?.id){
+          m.file.id=attachmentResult.id;
+          m.files[0].id=attachmentResult.id;
+        }
       } else state.messages.push(m);
     }
     if(supabaseReady()) await loadSupabaseMessages();
