@@ -2000,21 +2000,88 @@ function renderPageView(id){
     <div class="profile-single-content">${content}</div>
   </section>`;
 }
-function renderGroups(){
-  const q=String(window.groupSearch||"").toLowerCase().trim();
-  const filter=window.groupFilter||"all";
-  let gs=Array.isArray(state.groups)?state.groups:[];
-  if(q) gs=gs.filter(g=>`${g.name||""} ${g.description||""}`.toLowerCase().includes(q));
-  if(filter==="private") gs=gs.filter(g=>String(g.privacy||"Public").toLowerCase()==="privé");
-  if(filter==="public") gs=gs.filter(g=>String(g.privacy||"Public").toLowerCase()!=="privé");
-  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90 groups-page-fixed">
-    <div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Rejoignez des communautés ou créez votre propre espace.</p></div><button type="button" class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
-    <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input id="groupSearchInput" value="${esc(window.groupSearch||"")}" placeholder="Rechercher un groupe"></div>
-      <button type="button" class="hub-filter-v90 ${filter==="all"?"active":""}" data-action="groupFilter" data-filter="all">Tous</button>
-      <button type="button" class="hub-filter-v90 ${filter==="private"?"active":""}" data-action="groupFilter" data-filter="private">Privés</button>
-      <button type="button" class="hub-filter-v90 ${filter==="public"?"active":""}" data-action="groupFilter" data-filter="public">Publics</button></div>
-    <div class="hub-grid-v90">${gs.map(g=>{const members=Array.isArray(g.members)?g.members:[];const joined=members.includes(state.current);const owner=g.ownerId===state.current;return `<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||"Public")}</span><h2>${esc(g.name||"Groupe")}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${members.length} membres</span><span>${owner?"Votre groupe":g.privacy==="Privé"?"Groupe privé":"Communauté"}</span></div><div class="group-card-actions"><button type="button" class="btn secondary" data-action="viewGroup" data-id="${esc(g.id)}">Voir</button>${owner?`<button type="button" class="btn primary" data-action="manageGroup" data-id="${esc(g.id)}">Gérer</button>`:joined?`<button type="button" class="btn secondary" data-action="leaveGroup" data-id="${esc(g.id)}">Quitter</button>`:`<button type="button" class="btn primary" data-action="joinGroup" data-id="${esc(g.id)}">Rejoindre</button>`}</div></div></article>`}).join("")||`<div class="empty-state"><b>Aucun groupe trouvé</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
+function renderGroup(groupId){
+  const g=(state.groups||[]).find(x=>String(x.id)===String(groupId));
+  if(!g) return `${routeBackBar("Groupes","groups")}<section class="group-premium-empty"><h2>Groupe introuvable</h2><p>Ce groupe n'existe plus ou n'est pas disponible.</p></section>`;
+
+  const meUser=me();
+  const members=(g.members||g.member_ids||[]).map(id=>(state.users||[]).find(u=>String(u.id)===String(id))).filter(Boolean);
+  const isMember=members.some(u=>String(u.id)===String(state.current)) || g.is_member===true || g.joined===true;
+  const isOwner=String(g.owner_id||g.ownerId||"")===String(state.current);
+  const posts=(state.posts||[]).filter(p=>String(p.group_id||p.groupId||"")===String(g.id)).slice().reverse();
+  const visibility=String(g.visibility||g.privacy||"public").toLowerCase();
+  const about=g.about||g.description||"Aucune description pour le moment.";
+  const cover=g.cover_url||g.coverUrl||"";
+  const avatar=g.avatar_url||g.avatarUrl||"";
+  const mediaPosts=posts.filter(p=>p.media_url||p.mediaUrl||p.media_type||p.mediaType);
+
+  const postCard=posts.map(p=>{
+    const u=(state.users||[]).find(x=>String(x.id)===String(p.user_id||p.owner_id||""))||{};
+    const media=p.media_url||p.mediaUrl;
+    const mt=String(p.media_type||p.mediaType||"").toLowerCase();
+    let mediaHtml="";
+    if(media && mt.startsWith("image")) mediaHtml=`<img class="group-post-media" src="${escapeHtml(media)}" alt="">`;
+    else if(media && mt.startsWith("video")) mediaHtml=`<video class="group-post-media" src="${escapeHtml(media)}" controls playsinline></video>`;
+    else if(media && mt.startsWith("audio")) mediaHtml=`<audio class="group-post-audio" src="${escapeHtml(media)}" controls></audio>`;
+    else if(media) mediaHtml=`<a class="group-file-download" href="${escapeHtml(media)}" target="_blank" rel="noopener">📎 ${escapeHtml(p.file_name||p.fileName||"Fichier")} · Télécharger</a>`;
+    return `<article class="group-post-card">
+      <div class="group-post-head"><div class="group-mini-avatar">${escapeHtml(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</div><div><b>${escapeHtml(u.name||u.username||"Membre")}</b><small>${escapeHtml(p.created_at||p.createdAt||"")}</small></div></div>
+      ${p.content||p.text?`<p class="group-post-text">${escapeHtml(p.content||p.text)}</p>`:""}${mediaHtml}
+    </article>`;
+  }).join("") || `<div class="group-empty-feed">Aucune publication dans ce groupe pour le moment.</div>`;
+
+  return `${routeBackBar("Groupes","groups")}
+  <section class="group-premium">
+    <div class="group-cover" ${cover?`style="background-image:url('${escapeHtml(cover)}')"`:""}>
+      <div class="group-cover-shade"></div>
+      <div class="group-hero-content">
+        <div class="group-avatar-large">${avatar?`<img src="${escapeHtml(avatar)}" alt="">`:"👥"}</div>
+        <div class="group-title-wrap"><span class="group-chip">${visibility==="private"?"🔒 PRIVÉ":"🌐 PUBLIC"}</span><h1>${escapeHtml(g.name||"Groupe")}</h1><p>${members.length} membre${members.length>1?"s":""} · ${mediaPosts.length} média${mediaPosts.length>1?"s":""}</p></div>
+      </div>
+    </div>
+
+    <div class="group-premium-tabs">
+      <button type="button" class="group-tab active" data-group-tab="feed">Fil</button>
+      <button type="button" class="group-tab" data-group-tab="about">À propos</button>
+      <button type="button" class="group-tab" data-group-tab="members">Membres</button>
+      <button type="button" class="group-tab" data-group-tab="media">Médias</button>
+    </div>
+
+    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="join-group" data-group-id="${escapeHtml(g.id)}">Rejoindre</button></div>`:""}
+
+    <div class="group-premium-grid">
+      <main>
+        ${isMember?`<div class="group-composer">
+          <div class="group-composer-title">Créer une publication</div>
+          <textarea data-group-post-content data-group-id="${escapeHtml(g.id)}" placeholder="Que souhaitez-vous partager dans ce groupe ?"></textarea>
+          <div class="group-composer-actions">
+            <button type="button" data-group-pick="image" data-group-id="${escapeHtml(g.id)}">🖼️ Photo</button>
+            <button type="button" data-group-pick="video" data-group-id="${escapeHtml(g.id)}">🎥 Vidéo</button>
+            <button type="button" data-group-pick="file" data-group-id="${escapeHtml(g.id)}">📎 Fichier</button>
+            <button type="button" data-group-poll="${escapeHtml(g.id)}">📊 Sondage</button>
+            <button type="button" class="btn primary" data-group-publish="${escapeHtml(g.id)}">Publier</button>
+          </div>
+          <input type="file" hidden data-group-file-input data-group-id="${escapeHtml(g.id)}" multiple>
+        </div>`:""}
+        <div class="group-feed">${postCard}</div>
+      </main>
+
+      <aside>
+        <div class="group-side-card">
+          <div class="side-title"><b>À propos</b><button type="button" data-group-tab="about">Voir plus</button></div>
+          <p>${escapeHtml(about)}</p>
+          <div class="group-facts"><span>👥 ${members.length} membres</span><span>🌐 ${visibility==="private"?"Groupe privé":"Groupe public"}</span></div>
+        </div>
+        <div class="group-side-card">
+          <div class="side-title"><b>Membres</b><button type="button" data-group-tab="members">Voir tous</button></div>
+          <div class="group-member-stack">${members.slice(0,8).map(u=>`<span title="${escapeHtml(u.name||u.username||"Membre")}">${escapeHtml(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</span>`).join("")||"Aucun membre"}</div>
+        </div>
+        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${escapeHtml(g.id)}">Gérer le groupe</button></div>`:""}
+      </aside>
+    </div>
+  </section>`;
 }
+
 function renderMedia(type){
   const pageBar=pageContextBar();
   const normalizedType=type==="video"?"video":"reel";
