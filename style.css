@@ -3995,3 +3995,13 @@ body.dark .top-actions .menu-action{
   .groups-toolbar-v21 .hub-search-v90{min-width:100%;order:0}
   .groups-toolbar-v21 .hub-filter-v90{flex:1}
 }
+
+/* V1.1.6.21 — Pages & Groupes complete polish */
+.pages-complete-form .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pages-complete-form .media-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.pages-complete-form .field-help{font-size:.82rem;line-height:1.45;opacity:.72;margin-top:2px}
+.group-member-row-v21{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.group-member-row-v21>span:nth-child(2){flex:1;min-width:120px}
+.group-member-row-v21 small{display:block;opacity:.65}
+.group-about-v21 .full{grid-column:1/-1}
+@media(max-width:640px){.pages-complete-form .form-row,.pages-complete-form .media-form-grid{grid-template-columns:1fr}.group-member-row-v21 .btn{width:auto;flex:1}}
