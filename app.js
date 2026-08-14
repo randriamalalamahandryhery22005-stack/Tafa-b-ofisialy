@@ -1185,11 +1185,14 @@ const ADMIN = {
 };
 
 function isAdminAccount(entity=me()){
-  if(!entity || !adminAuthUserId) return false;
-  // SECURITY: only the exact Supabase Auth user ID obtained from the
-  // authenticated session can be the administrator. A profile username,
-  // profile email, local ADMIN_ID, or client-side field cannot grant admin.
-  return String(entity.id||"") === String(adminAuthUserId);
+  if(!entity) return false;
+  // The trusted ID is populated only from Supabase Auth during hydration.
+  // Exact official Auth email is used only as a recovery while the profile
+  // object is being rebuilt; it never trusts username/name fields.
+  const idOk=!!adminAuthUserId && String(entity.id||"")===String(adminAuthUserId);
+  const emailOk=String(entity.email||"").trim().toLowerCase()===String(ADMIN.email).trim().toLowerCase()
+    && !!adminAuthUserId && String(entity.id||"")===String(adminAuthUserId);
+  return idOk || emailOk;
 }
 function isAdminUser(entity){ return isAdminAccount(entity); }
 
@@ -2114,7 +2117,8 @@ async function switchSupabaseAccount(email){
 function renderMenu(){
   const pageBar=pageContextBar();
   const u=me();
-  const items=MENU_ITEMS.filter(([id])=>id!=="admin"||isAdminAccount(u));
+  const adminVisible=isAdminAccount(u);
+  const items=MENU_ITEMS.filter(([id])=>id!=="admin"||adminVisible);
   return `${routeBackBar("Actualités","home")}${pageBar}<section class="menu-premium-page menu-v86">
     <div class="menu-identity-v86">
       <div class="menu-profile-v86" data-route="profile">
@@ -2367,6 +2371,7 @@ function renderAbout(){
 }
 function renderAdmin(){
   if(!isAdminAccount()) return `${routeBackBar("Menu","menu")}<section class="card"><h2>Accès refusé</h2><p>Cette section est réservée à l'administrateur officiel.</p></section>`;
+
 
   const users=Array.isArray(state.users)?state.users:[];
   const posts=Array.isArray(state.posts)?state.posts:[];
