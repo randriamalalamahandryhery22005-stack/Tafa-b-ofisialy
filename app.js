@@ -2587,7 +2587,17 @@ function renderSuggestions(n){const users=state.users.filter(u=>u.id!==state.cur
 
 function bindPageEvents(){
   document.querySelectorAll("[data-route]").forEach(el=>el.onclick=(e)=>{e.preventDefault();routeTo(el.dataset.route);});
-  document.querySelectorAll("[data-action]").forEach(el=>el.onclick=(e)=>handleAction(e,el));
+  document.querySelectorAll('[data-action="viewGroup"]').forEach(el=>{
+    el.onclick=(e)=>{
+      e.preventDefault();
+      e.stopPropagation();
+      viewGroup(el.dataset.groupId || el.dataset.id);
+    };
+  });
+  document.querySelectorAll("[data-action]").forEach(el=>{
+    if(el.dataset.action==="viewGroup") return;
+    el.onclick=(e)=>handleAction(e,el);
+  });
   document.querySelectorAll("[data-comment-form]").forEach(form=>form.onsubmit=async e=>{
     e.preventDefault();const postId=form.dataset.commentForm,text=form.querySelector("input").value.trim();if(!text)return;
     if(!supabaseReady()||!state.current){toast("Connexion requise");return;}
@@ -3602,27 +3612,24 @@ async function joinGroup(id){try{await joinSupabaseGroup(id);}catch(e){toast("Im
 async function leaveGroup(id){try{await leaveSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
 function viewGroup(id){
   const gid=String(id||"").trim();
-  if(!gid){ toast("Groupe introuvable."); return; }
+  if(!gid){ toast("ID du groupe manquant."); return; }
 
-  const open=()=>{
-    const g=(state.groups||[]).find(x=>String(x.id)===gid);
-    if(!g){ toast("Groupe introuvable."); return; }
-    selectedGroupId=gid;
-    route="groupView";
-    render();
-  };
+  selectedGroupId=gid;
+  route="groupView";
 
-  const loaded=(state.groups||[]).some(x=>String(x.id)===gid);
-  if(loaded){ open(); return; }
+  // Render immediately. The group detail renderer can use the selected ID.
+  render();
 
-  if(supabaseReady() && typeof loadSupabaseGroups==="function"){
-    loadSupabaseGroups().then(open).catch(err=>{
-      console.error("Chargement groupe:",err);
+  // If the group isn't currently loaded, refresh groups and render again.
+  const exists=(state.groups||[]).some(g=>String(g.id)===gid);
+  if(!exists && supabaseReady() && typeof loadSupabaseGroups==="function"){
+    loadSupabaseGroups().then(()=>{
+      if(route==="groupView" && String(selectedGroupId)===gid) render();
+    }).catch(err=>{
+      console.error("viewGroup:",err);
       toast("Impossible de charger le groupe.");
     });
-    return;
   }
-  toast("Impossible de charger le groupe.");
 }
 function manageGroup(id){
   const g=(state.groups||[]).find(x=>String(x.id)===String(id));
