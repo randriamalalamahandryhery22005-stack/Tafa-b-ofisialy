@@ -757,11 +757,21 @@ async function hydrateSupabaseSession(){
   const {data:{session},error} = await SB.auth.getSession();
   if(error) console.error("Supabase session:",error);
   if(!session){
+    adminAuthUserId=null;
     state.current=null;
     state.users=[];
     save();
     return false;
   }
+
+  // The admin identity is bound to the real Supabase Auth account.
+  // Only the authenticated Auth email can activate the official account;
+  // profile fields are never trusted for this decision.
+  const authEmail=String(session.user?.email||"").trim().toLowerCase();
+  adminAuthUserId = authEmail===String(ADMIN.email).trim().toLowerCase()
+    ? String(session.user.id)
+    : null;
+
   const {data:profile,error:profileError}=await SB
     .from("profiles")
     .select("*")
@@ -1062,7 +1072,7 @@ async function signOutSupabase(){
 }
 
 const STORAGE = "TAFASS_V4_STATE";
-const ADMIN_ID = "tafass-admin";
+const ADMIN_ID = "tafass-admin"; // legacy display ID only; never grants admin rights
 const ADMIN = {
   id: ADMIN_ID, firstName:"Tafaß", lastName:"Ofisialy", name:"Tafaß Ofisialy",
   username:"tafabofisialy", email:"tafabofisialy@gmail.com",
@@ -1073,12 +1083,11 @@ const ADMIN = {
 };
 
 function isAdminAccount(entity=me()){
-  if(!entity) return false;
-  const email=String(entity.email||"").trim().toLowerCase();
-  const username=String(entity.username||"").trim().toLowerCase();
-  return entity.id===ADMIN_ID ||
-    email===String(ADMIN.email).trim().toLowerCase() ||
-    username===String(ADMIN.username).trim().toLowerCase();
+  if(!entity || !adminAuthUserId) return false;
+  // SECURITY: only the exact Supabase Auth user ID obtained from the
+  // authenticated session can be the administrator. A profile username,
+  // profile email, local ADMIN_ID, or client-side field cannot grant admin.
+  return String(entity.id||"") === String(adminAuthUserId);
 }
 function isAdminUser(entity){ return isAdminAccount(entity); }
 function adminizeUser(entity){
@@ -1186,6 +1195,7 @@ const PROFILE_CATS = PAGE_CATS;
 
 let state = loadState();
 let route = state.current ? "home" : "home";
+let adminAuthUserId = null;
 let searchFilter = "Tout";
 let activeConversation = null;
 let activeCall = null;
@@ -1945,6 +1955,7 @@ async function switchSupabaseAccount(email){
       // No local user id is ever used as an authentication mechanism.
       const {error:outError}=await SB.auth.signOut();
       if(outError) throw outError;
+      adminAuthUserId=null;
       state.current=null;
       state.users=[];
       state.posts=[];
