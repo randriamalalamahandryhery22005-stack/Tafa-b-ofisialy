@@ -3597,7 +3597,7 @@ function renderGroups(){
       ${groups.map(g=>`<article class="group-list-card">
         <div class="group-list-cover" ${g.cover_url?`style="background-image:url('${esc(g.cover_url)}')"`:""}><span>${g.privacy==="Privé"?"🔒":"🌐"}</span></div>
         <div class="group-list-body"><h3>${esc(g.name)}</h3><p>${esc(g.description||"Communauté Tafaß")}</p><small>👥 ${Number(g.member_count||g.members?.length||0)} membres · ${esc(g.category||"Général")}</small>
-        <button type="button" class="btn primary wide" data-action="viewGroup" data-id="${esc(g.id)}">Voir le groupe</button></div>
+        <button type="button" class="btn primary wide" data-action="viewGroup" data-group-id="${esc(g.id)}" data-id="${esc(g.id)}">Voir le groupe</button></div>
       </article>`).join("") || `<div class="card empty"><b>Aucun groupe</b><p>Créez votre première communauté.</p></div>`}
     </div>
   </section>`;
@@ -3622,9 +3622,26 @@ function createGroup(){
 async function joinGroup(id){try{await joinSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
 async function leaveGroup(id){try{await leaveSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
 function viewGroup(id){
-  const g=(state.groups||[]).find(x=>String(x.id)===String(id));
-  if(!g)return toast("Groupe introuvable.");
-  selectedGroupId=id; route="groupView"; render();
+  const gid=String(id||"").trim();
+  if(!gid)return toast("Groupe introuvable.");
+  const g=(state.groups||[]).find(x=>String(x.id)===gid);
+  if(!g){
+    // Refresh groups once from Supabase before declaring the group missing.
+    if(supabaseReady()){
+      loadSupabaseGroups().then(()=>{
+        const fresh=(state.groups||[]).find(x=>String(x.id)===gid);
+        if(!fresh)return toast("Groupe introuvable.");
+        selectedGroupId=gid;
+        route="groupView";
+        render();
+      }).catch(err=>toast(err?.message||"Impossible de charger le groupe."));
+      return;
+    }
+    return toast("Groupe introuvable.");
+  }
+  selectedGroupId=gid;
+  route="groupView";
+  render();
 }
 function manageGroup(id){
   const g=(state.groups||[]).find(x=>String(x.id)===String(id));
@@ -4268,3 +4285,15 @@ document.addEventListener('click', async (event) => {
     button.disabled = false;
   }
 });
+
+
+/* TAFA_GROUP_VIEW_CAPTURE_FIX */
+document.addEventListener("click", function(e){
+  const el=e.target.closest?.('[data-action="viewGroup"], [data-action="view-group"], [data-group-open]');
+  if(!el) return;
+  const gid=el.getAttribute("data-group-id") || el.getAttribute("data-id");
+  if(!gid) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  viewGroup(gid);
+}, true);
