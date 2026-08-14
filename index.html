@@ -6,6 +6,18 @@
   <meta name="theme-color" content="#1877f2">
   <title>Tafaß</title>
   <link rel="stylesheet" href="style.css">
+
+<style id="tafa-message-upload-progress">
+.message-upload-progress{grid-column:1/-1;width:100%;box-sizing:border-box;padding:10px 12px;margin:0 0 8px;border:1px solid rgba(120,140,170,.22);border-radius:14px;background:rgba(20,28,45,.88);box-shadow:0 8px 24px rgba(0,0,0,.12)}
+.message-upload-progress.hidden{display:none!important}
+.message-upload-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
+.message-upload-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:650}
+.message-upload-percent{font-size:13px;flex:0 0 auto}
+.message-upload-track{height:7px;width:100%;overflow:hidden;border-radius:999px;background:rgba(255,255,255,.12)}
+.message-upload-progress-bar{display:block;height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#4f8cff,#7b61ff);transition:width .12s linear}
+.message-upload-status{display:block;margin-top:6px;opacity:.72;font-size:11px}
+@media(max-width:640px){.message-upload-progress{padding:9px 10px;border-radius:12px}}
+</style>
 </head>
 <body>
   <!-- SPLASH PREMIUM — aucun texte, uniquement le logo et 5 étapes de chargement -->

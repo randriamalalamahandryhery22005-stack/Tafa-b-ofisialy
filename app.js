@@ -326,7 +326,47 @@ function messageFileUrl(file){
   return '';
 }
 
-async function uploadMessageFile(file){
+
+let messageUploadProgress = {active:false, conversationId:null, fileName:"", percent:0, status:"Préparation…"};
+
+function updateMessageUploadProgress(conversationId, fileName, percent, status){
+  messageUploadProgress={active:true,conversationId,fileName:String(fileName||"Fichier"),percent:Math.max(0,Math.min(100,Math.round(percent||0))),status:status||"Envoi…"};
+  const box=document.getElementById("messageUploadProgress");
+  if(!box) return;
+  box.classList.remove("hidden");
+  const bar=box.querySelector(".message-upload-progress-bar");
+  const pct=box.querySelector(".message-upload-percent");
+  const name=box.querySelector(".message-upload-name");
+  const statusEl=box.querySelector(".message-upload-status");
+  if(bar) bar.style.width=messageUploadProgress.percent+"%";
+  if(pct) pct.textContent=messageUploadProgress.percent+"%";
+  if(name) name.textContent=messageUploadProgress.fileName;
+  if(statusEl) statusEl.textContent=messageUploadProgress.status;
+}
+function finishMessageUploadProgress(){
+  const box=document.getElementById("messageUploadProgress");
+  messageUploadProgress={active:false,conversationId:null,fileName:"",percent:100,status:"Terminé"};
+  if(box){
+    const bar=box.querySelector(".message-upload-progress-bar");
+    const pct=box.querySelector(".message-upload-percent");
+    const statusEl=box.querySelector(".message-upload-status");
+    if(bar) bar.style.width="100%";
+    if(pct) pct.textContent="100%";
+    if(statusEl) statusEl.textContent="Envoyé ✓";
+    setTimeout(()=>{ if(messageUploadProgress.active===false && box) box.classList.add("hidden"); },650);
+  }
+}
+function failMessageUploadProgress(){
+  const box=document.getElementById("messageUploadProgress");
+  messageUploadProgress={...messageUploadProgress,active:false,status:"Échec"};
+  if(box){
+    const statusEl=box.querySelector(".message-upload-status");
+    if(statusEl) statusEl.textContent="Échec de l’envoi";
+    setTimeout(()=>{ if(box) box.classList.add("hidden"); },1800);
+  }
+}
+
+async function uploadMessageFile(file,onProgress){
   if(!supabaseReady()||!state.current||!file) throw new Error('Fichier invalide.');
   const max=100*1024*1024;
   if(Number(file.size||0)>max) throw new Error('Fichier trop volumineux. Maximum : 100 Mo.');
@@ -337,30 +377,52 @@ async function uploadMessageFile(file){
   const mime=messageMimeType(file);
   const path=`${state.current}/${Date.now()}_${crypto.randomUUID()}_${safeName}`;
 
-  const bucket=SB.storage.from('messages');
-  const {data:uploaded,error}=await bucket.upload(path,file,{
-    contentType:mime,
-    upsert:false,
-    cacheControl:'3600'
-  });
-  if(error){
-    console.error('[TAFA MESSAGES STORAGE]',error);
-    throw new Error(`Upload fichier refusé : ${error.message||'erreur Storage'}`);
-  }
-  if(!uploaded?.path) throw new Error('Upload terminé mais le chemin du fichier est introuvable.');
+  const baseUrl=window.TAFA_SUPABASE_CONFIG?.url;
+  const apiKey=window.TAFA_SUPABASE_CONFIG?.key;
+  if(!baseUrl||!apiKey) throw new Error('Configuration Supabase introuvable.');
 
-  const {data}=bucket.getPublicUrl(uploaded.path);
+  const sessionResult=await SB.auth.getSession();
+  const accessToken=sessionResult?.data?.session?.access_token;
+  if(!accessToken) throw new Error('Session Supabase expirée. Reconnectez-vous.');
+
+  await new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();
+    xhr.open('POST',`${baseUrl}/storage/v1/object/messages/${path}`,true);
+    xhr.setRequestHeader('Authorization',`Bearer ${accessToken}`);
+    xhr.setRequestHeader('apikey',apiKey);
+    xhr.setRequestHeader('x-upsert','false');
+    xhr.setRequestHeader('cache-control','3600');
+    xhr.setRequestHeader('content-type',mime||'application/octet-stream');
+    xhr.upload.onprogress=(e)=>{
+      if(e.lengthComputable){
+        const p=(e.loaded/e.total)*100;
+        onProgress?.(p);
+      }
+    };
+    xhr.onload=()=>{
+      if(xhr.status>=200&&xhr.status<300) resolve();
+      else{
+        let msg='Erreur Storage';
+        try{msg=JSON.parse(xhr.responseText)?.message||JSON.parse(xhr.responseText)?.error||msg;}catch(_){}
+        reject(new Error(`Upload fichier refusé : ${msg}`));
+      }
+    };
+    xhr.onerror=()=>reject(new Error('Connexion interrompue pendant l’upload.'));
+    xhr.onabort=()=>reject(new Error('Upload annulé.'));
+    try{xhr.send(file);}catch(e){reject(e);}
+  });
+
+  const {data}=SB.storage.from('messages').getPublicUrl(path);
   if(!data?.publicUrl) throw new Error('URL du fichier introuvable après upload.');
 
   return {
     url:data.publicUrl,
-    path:uploaded.path,
+    path,
     name:file.name||safeName,
     size:Number(file.size||0),
     type:mime
   };
 }
-
 
 
 function supabaseReady(){
@@ -1698,7 +1760,7 @@ function renderChatPremium(c){
   const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const msgs=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
   return `<header class="chat-top-premium"><button class="icon-btn chat-back-btn" data-action="backToMessages" title="Retour">‹</button>${avatar(other||{name:c.name},"avatar") }<div><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${c.type==="group"?`${c.members.length} membres`:isOnline(other)?"En ligne":"Hors ligne"}</small></div><div class="chat-tools"><button class="icon-btn" data-action="voiceCall" data-id="${other?.id||c.id}" title="Appel vocal">☎</button><button class="icon-btn" data-action="voiceVideoCall" data-id="${other?.id||c.id}" title="Appel vidéo">▣</button></div></header>
   <div class="chat-body-premium">${msgs.length?msgs.map(m=>`<div class="bubble-premium ${m.from===state.current?"mine":""}">${m.files?.map(messageAttachmentHtml).join("")||messageAttachmentHtml(m.file)}${m.text?`<div>${esc(m.text)}</div>`:""}<small>${timeAgo(m.createdAt)}${m.from===state.current?` · <span class="message-status ${m.read?"read":"sent"}">${m.read?"✓✓":"✓"}</span>`:""}</small></div>`).join(""):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Aucun message</b><span>Écrivez votre premier message.</span></div>`}</div>
-  <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile" title="Photo, vidéo ou fichier">＋</button><button type="button" class="icon-btn voice-record-btn ${voiceRecording?'recording':''}" data-action="recordVoice" title="${voiceRecording?'Arrêter l’enregistrement':'Message vocal'}">${voiceRecording?'■':'🎙'}</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.7z,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv,.json,.html,.css,.js"><div class="chat-input-shell"><input name="text" placeholder="Message"><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn" title="Envoyer">➤</button></form>`;
+  <form class="chat-compose-premium" data-chat-form="${c.id}"><div id="messageUploadProgress" class="message-upload-progress hidden"><div class="message-upload-top"><span class="message-upload-name">Fichier</span><b class="message-upload-percent">0%</b></div><div class="message-upload-track"><span class="message-upload-progress-bar"></span></div><small class="message-upload-status">Préparation…</small></div><button type="button" class="icon-btn" data-action="attachFile" title="Photo, vidéo ou fichier">＋</button><button type="button" class="icon-btn voice-record-btn ${voiceRecording?'recording':''}" data-action="recordVoice" title="${voiceRecording?'Arrêter l’enregistrement':'Message vocal'}">${voiceRecording?'■':'🎙'}</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.7z,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv,.json,.html,.css,.js"><div class="chat-input-shell"><input name="text" placeholder="Message"><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn" title="Envoyer">➤</button></form>`;
 }
 function renderPages(){
   const mine=state.pages.filter(p=>p.ownerId===state.current);
@@ -2747,7 +2809,7 @@ async function persistMessageAttachment(messageId,uploaded){
       uploader_id:uploaderId,
       file_url:uploaded.url||null,
       file_name:uploaded.name||'Fichier',
-      file_type:uploaded.type||'application/octet-stream',
+      mime_type:uploaded.type||'application/octet-stream',
       file_size:Number(uploaded.size||0),
       storage_path:uploaded.path||null
     };
@@ -2775,7 +2837,10 @@ async function sendMessage(convId,text,fileOrFiles){
       if(supabaseReady()) await persistMessage(m); else state.messages.push(m);
     }
     for(const raw of rawFiles){
-      const uploaded=await uploadMessageFile(raw);
+      updateMessageUploadProgress(convId,raw.name||"Fichier",0,"Préparation de l’envoi…");
+      const uploaded=await uploadMessageFile(raw,(percent)=>{
+        updateMessageUploadProgress(convId,raw.name||"Fichier",percent,percent>=100?"Finalisation…":"Envoi en cours…");
+      });
       const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text:'',files:[{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'}],file:{id:null,url:uploaded.url,path:uploaded.path,name:uploaded.name,size:uploaded.size,type:uploaded.type,messageType:uploaded.type.startsWith('audio/')?'audio':'file'},read:false,createdAt:new Date().toISOString(),messageType:uploaded.type.startsWith('audio/')?'audio':'file',mediaUrl:uploaded.url,fileName:uploaded.name,fileSize:uploaded.size,mimeType:uploaded.type};
       if(supabaseReady()) {
         await persistMessage(m);
@@ -2785,12 +2850,15 @@ async function sendMessage(convId,text,fileOrFiles){
           m.files[0].id=attachmentResult.id;
         }
       } else state.messages.push(m);
+      updateMessageUploadProgress(convId,raw.name||"Fichier",100,"Envoyé ✓");
     }
+    if(rawFiles.length) finishMessageUploadProgress();
     if(supabaseReady()) await loadSupabaseMessages();
     if(to) await notify(to,'message',`${displayName(me())} vous a envoyé un message.`);
     save(); render();
   }catch(error){
     console.error('sendMessage:',error);
+    if(rawFiles.length) failMessageUploadProgress();
     toast('Message impossible : '+(error.message||'erreur Supabase'));
   }
 }
