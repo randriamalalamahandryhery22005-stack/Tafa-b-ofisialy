@@ -838,15 +838,22 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   if(userError) throw userError;
   if(!user?.id) throw new Error("Session Supabase introuvable. Reconnectez-vous.");
 
+  // Always use the authenticated Supabase UUID. Never trust a local/account id.
   state.current=user.id;
   ownerId=user.id;
+
   if(publisherPageId){
     const page=findPage(publisherPageId);
-    if(!page || page.ownerId!==user.id) throw new Error("Vous ne pouvez publier qu'au nom de votre propre Page.");
+    if(!page || page.ownerId!==user.id) {
+      throw new Error("Vous ne pouvez publier qu'au nom de votre propre Page.");
+    }
   }
+
   if(groupId){
     const g=findGroup(groupId);
-    if(!g || !g.members.includes(user.id)) throw new Error('Vous devez être membre du groupe pour publier.');
+    if(!g || !g.members.includes(user.id)) {
+      throw new Error("Vous devez être membre du groupe pour publier.");
+    }
   }
 
   if(visibility==="Sélection personnalisée") {
@@ -863,7 +870,9 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
     const fileIsImage=String(file.type||"").toLowerCase().startsWith("image/");
 
     if(kind==="photo" && !fileIsImage) throw new Error("Le mode Photo nécessite une image.");
-    if((kind==="video" || kind==="reel") && !fileIsVideo) throw new Error(`Le mode ${kind==="reel"?"Reel":"Vidéo"} nécessite une vidéo.`);
+    if((kind==="video" || kind==="reel") && !fileIsVideo) {
+      throw new Error(`Le mode ${kind==="reel"?"Reel":"Vidéo"} nécessite une vidéo.`);
+    }
 
     media_type=kind==="photo" ? "photo"
       : kind==="reel" ? "reel"
@@ -872,43 +881,57 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   }
 
   const id=crypto.randomUUID();
-  // Existing Tafaß database schema uses user_id + content.
-  // Keep the frontend model (ownerId/text) separate from Supabase column names.
-  const payload={
-    id,
-    user_id: ownerId,
-    owner_id: ownerId,
-    content: String(text||""),
-    media_url: media_url || null,
-    media_type,
-    visibility: groupId ? 'Group' : postVisibilityToDb(visibility),
-    publisher_page_id: publisherPageId || null,
-    group_id: groupId || null
-  };
 
-  const {error}=await SB.from("posts").insert(payload);
+  /*
+   * V1.1.6.24 — publication RPC.
+   * The browser no longer inserts directly into public.posts.
+   * tafa_create_post uses auth.uid() server-side and validates
+   * personal/Page/group publication before inserting.
+   */
+  const {data,error}=await SB.rpc("tafa_create_post",{
+    p_id:id,
+    p_content:String(text||""),
+    p_media_url:media_url || null,
+    p_media_type:media_type,
+    p_visibility:groupId ? "Group" : postVisibilityToDb(visibility),
+    p_publisher_page_id:publisherPageId || null,
+    p_group_id:groupId || null
+  });
+
   if(error){
     if(uploadedPath){
-      try{ await SB.storage.from("posts").remove([uploadedPath]); }catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
+      try{ await SB.storage.from("posts").remove([uploadedPath]); }
+      catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
     }
+
     const msg=[error.message,error.details,error.hint].filter(Boolean).join(" — ");
-    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par Supabase (RLS). Exécutez PUBLICATIONS_V4_SCHEMA_FIX.sql puis réessayez.");
-    if(/column .*owner_id|column .*text|schema cache/i.test(msg)) throw new Error("Le schéma de la table posts ne correspond pas à l'installation actuelle de Tafaß. Vérifiez les colonnes user_id et content de public.posts.");
-    if(/foreign key|profiles/i.test(msg)) throw new Error("Le profil Supabase de ce compte est introuvable. "+msg);
+    if(/permission denied|row-level security|rls|policy/i.test(msg)){
+      throw new Error("Publication refusée par Supabase : "+msg);
+    }
     throw new Error(msg||"Erreur Supabase lors de la publication.");
   }
 
+  const row=Array.isArray(data) ? data[0] : data;
+  if(!row || !row.id){
+    if(uploadedPath){
+      try{ await SB.storage.from("posts").remove([uploadedPath]); }
+      catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
+    }
+    throw new Error("Supabase n'a pas retourné la publication créée.");
+  }
+
   return {
-    id,
-    user_id: ownerId,
-    content: String(text||""),
-    media_url: media_url || "",
-    media_type,
-    visibility: groupId ? 'Group' : postVisibilityToDb(visibility),
-    publisher_page_id: publisherPageId || null,
-    group_id: groupId || null,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+    id:row.id,
+    user_id:row.user_id,
+    owner_id:row.owner_id,
+    content:row.content||"",
+    media_url:row.media_url||"",
+    media_type:row.media_type||media_type,
+    visibility:row.visibility||postVisibilityToDb(visibility),
+    publisher_page_id:row.publisher_page_id||null,
+    group_id:row.group_id||null,
+    created_at:row.created_at,
+    updated_at:row.updated_at
   };
 }
 async function signOutSupabase(){
