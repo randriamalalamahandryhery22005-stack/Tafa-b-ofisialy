@@ -1,4 +1,7 @@
 
+/* GROUP SEARCH */
+document.addEventListener("input",function(e){if(e.target?.id==="groupSearchInput"){window.groupSearch=e.target.value||"";render();}});
+
 /* TAFA_ADMIN_CLICK_FIX
    The admin menu must remain clickable even when a parent menu handler
    consumes the click. */
@@ -1998,10 +2001,19 @@ function renderPageView(id){
   </section>`;
 }
 function renderGroups(){
-  const gs=state.groups||[];
-  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Rejoignez des communautés ou créez votre propre espace privé.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
-  <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input placeholder="Rechercher un groupe"></div><button class="hub-filter-v90">Tous</button><button class="hub-filter-v90">Privés</button><button class="hub-filter-v90">Publics</button></div>
-  <div class="hub-grid-v90">${gs.map(g=>`<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||"Public")}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${g.members?.length||0} membres</span><span>${g.privacy==="Privé"?"Groupe privé":"Communauté"}</span></div><button class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button></div></article>`).join("")||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
+  const q=String(window.groupSearch||"").toLowerCase().trim();
+  const filter=window.groupFilter||"all";
+  let gs=Array.isArray(state.groups)?state.groups:[];
+  if(q) gs=gs.filter(g=>`${g.name||""} ${g.description||""}`.toLowerCase().includes(q));
+  if(filter==="private") gs=gs.filter(g=>String(g.privacy||"Public").toLowerCase()==="privé");
+  if(filter==="public") gs=gs.filter(g=>String(g.privacy||"Public").toLowerCase()!=="privé");
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90 groups-page-fixed">
+    <div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Rejoignez des communautés ou créez votre propre espace.</p></div><button type="button" class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
+    <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input id="groupSearchInput" value="${esc(window.groupSearch||"")}" placeholder="Rechercher un groupe"></div>
+      <button type="button" class="hub-filter-v90 ${filter==="all"?"active":""}" data-action="groupFilter" data-filter="all">Tous</button>
+      <button type="button" class="hub-filter-v90 ${filter==="private"?"active":""}" data-action="groupFilter" data-filter="private">Privés</button>
+      <button type="button" class="hub-filter-v90 ${filter==="public"?"active":""}" data-action="groupFilter" data-filter="public">Publics</button></div>
+    <div class="hub-grid-v90">${gs.map(g=>{const members=Array.isArray(g.members)?g.members:[];const joined=members.includes(state.current);const owner=g.ownerId===state.current;return `<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||"Public")}</span><h2>${esc(g.name||"Groupe")}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${members.length} membres</span><span>${owner?"Votre groupe":g.privacy==="Privé"?"Groupe privé":"Communauté"}</span></div><div class="group-card-actions"><button type="button" class="btn secondary" data-action="viewGroup" data-id="${esc(g.id)}">Voir</button>${owner?`<button type="button" class="btn primary" data-action="manageGroup" data-id="${esc(g.id)}">Gérer</button>`:joined?`<button type="button" class="btn secondary" data-action="leaveGroup" data-id="${esc(g.id)}">Quitter</button>`:`<button type="button" class="btn primary" data-action="joinGroup" data-id="${esc(g.id)}">Rejoindre</button>`}</div></div></article>`}).join("")||`<div class="empty-state"><b>Aucun groupe trouvé</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
 }
 function renderMedia(type){
   const pageBar=pageContextBar();
@@ -2650,6 +2662,11 @@ async function handleAction(e,el){
   if(a==="editPage")return editPage(id);
   if(a==="createGroup")return createGroup();
   if(a==="joinGroup")return joinGroup(id);
+  if(a==="leaveGroup")return leaveGroup(id);
+  if(a==="viewGroup")return viewGroup(id);
+  if(a==="manageGroup")return manageGroup(id);
+  if(a==="deleteGroup")return deleteGroup(id);
+  if(a==="groupFilter"){window.groupFilter=event?.currentTarget?.dataset?.filter||"all";return render();}
   if(a==="editProfile")return editProfile();
   if(a==="editCover")return editCover();
   if(a==="refreshProfile"){
@@ -3287,8 +3304,16 @@ function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de
   $("pageForm").onsubmit=e=>{e.preventDefault();const p={id:uid("page"),ownerId:state.current,name:$("pName").value.trim(),category:$("pCat").value,username:$("pUser").value.trim(),description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:"",cover:"",createdAt:new Date().toISOString()};state.pages.push(p);save();closeModal();render();toast("Page créée");};
 }
 function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=e=>{e.preventDefault();p.name=$("epName").value;p.description=$("epDesc").value;p.category=$("epCat").value;save();closeModal();render();};}
-function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=e=>{e.preventDefault();state.groups.push({id:uid("g"),name:$("gName").value,privacy:$("gPrivacy").value,description:$("gDesc").value,members:[state.current],ownerId:state.current});save();closeModal();render();};}
-function joinGroup(id){const g=state.groups.find(x=>x.id===id);if(g&&!g.members.includes(state.current)){g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe");}}
+function createGroup(){
+  modal("Créer un groupe",`<form id="groupForm" class="premium-form"><label>Nom<input id="gName" maxlength="80" required></label><label>Confidentialité<select id="gPrivacy"><option value="Public">Public</option><option value="Privé">Privé</option></select></label><label>Description<textarea id="gDesc" maxlength="500" placeholder="Décrivez votre groupe"></textarea></label><button type="submit" class="btn primary wide">Créer le groupe</button></form>`);
+  $("groupForm").onsubmit=e=>{e.preventDefault();const name=$("gName").value.trim();if(!name)return toast("Le nom du groupe est obligatoire.");state.groups=[...(state.groups||[]),{id:uid("g"),name,privacy:$("gPrivacy").value,description:$("gDesc").value.trim(),members:[state.current],ownerId:state.current,createdAt:new Date().toISOString()}];save();closeModal();render();toast("Groupe créé avec succès.");};
+}
+function joinGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g)return toast("Groupe introuvable.");g.members=Array.isArray(g.members)?g.members:[];if(g.members.includes(state.current))return toast("Vous êtes déjà membre.");if(String(g.privacy||"Public")==="Privé")return toast("Ce groupe est privé.");g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe.");}
+function leaveGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g)return;if(g.ownerId===state.current)return toast("Le propriétaire ne peut pas quitter son groupe.");g.members=(g.members||[]).filter(x=>x!==state.current);save();render();toast("Vous avez quitté le groupe.");}
+function viewGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g)return toast("Groupe introuvable.");const members=(g.members||[]).map(findUser).filter(Boolean);modal(esc(g.name||"Groupe"),`<div class="group-detail-fixed"><span class="type-pill">${esc(g.privacy||"Public")}</span><p>${esc(g.description||"Communauté Tafaß")}</p><h3>${members.length} membres</h3><div class="group-members-fixed">${members.slice(0,30).map(u=>`<div class="group-member-fixed">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>${u.id===g.ownerId?"Administrateur":"Membre"}</small></span></div>`).join("")||"<span>Aucun membre</span>"}</div><button type="button" class="btn primary wide" data-action="closeModal">Fermer</button></div>`);}
+function manageGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g||g.ownerId!==state.current)return toast("Accès refusé.");modal("Gérer le groupe",`<div class="premium-options"><button class="menu-card-premium" data-action="viewGroup" data-id="${esc(id)}"><span>◉</span><strong>Voir le groupe</strong></button><button class="menu-card-premium" data-action="deleteGroup" data-id="${esc(id)}"><span>🗑</span><strong>Supprimer le groupe</strong></button></div>`);}
+function deleteGroup(id){const g=(state.groups||[]).find(x=>x.id===id);if(!g||g.ownerId!==state.current)return toast("Vous ne pouvez pas supprimer ce groupe.");state.groups=state.groups.filter(x=>x.id!==id);save();closeModal();render();toast("Groupe supprimé.");}
+
 async function changePassword(){
   modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Votre mot de passe est géré directement par Supabase Auth. Il n'est jamais enregistré dans le navigateur.</div><label>Mot de passe actuel<input id="oldPass" type="password" autocomplete="current-password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" autocomplete="new-password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
   $("passwordChangeForm").onsubmit=async e=>{
