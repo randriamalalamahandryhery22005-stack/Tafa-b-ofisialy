@@ -2243,14 +2243,82 @@ function renderAbout(){
   <div class="about-description-v90"><h2>Notre mission</h2><p>Tafaß permet de communiquer, publier des photos et vidéos, partager des Stories et Reels, discuter en privé, créer des groupes et développer des Pages professionnelles.</p><div class="about-features-v90"><span>Actualités</span><span>Messages</span><span>Amis</span><span>Pages</span><span>Vidéos</span><span>Marketplace</span><span>Groupes</span><span>Notifications</span></div></div></section>`;
 }
 function renderAdmin(){
-  if(!isAdminAccount())return`${routeBackBar("Menu","menu")}<div class="card empty"><b>Accès refusé.</b><p>Le panneau administrateur est réservé au compte officiel.</p></div>`;
-  const pending=state.badgeRequests.filter(r=>r.status==="pending");
-  return `${routeBackBar("Menu","menu")}<div class="page-head"><div><h1>Administration Tafaß</h1><p>Gestion globale et modération.</p></div><span class="verified-badge">ADMIN OFFICIEL</span></div>
-  <div class="admin-stat"><div class="card"><b>${state.users.length}</b><small>Utilisateurs</small></div><div class="card"><b>${state.pages.length}</b><small>Pages</small></div><div class="card"><b>${state.posts.length}</b><small>Publications</small></div><div class="card"><b>${state.messages.length}</b><small>Messages</small></div></div>
-  <div class="grid-2" style="margin-top:14px"><div class="card"><h3>Demandes de badge</h3>${pending.length?pending.map(r=>`<div class="list-item"><div class="list-main"><b>${esc(displayName(findUser(r.userId)))}</b><small>${esc(r.category||"")}</small></div><button class="btn primary" data-action="approveBadge" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectBadge" data-id="${r.id}">Refuser</button></div>`).join(""):`<div class="empty">Aucune demande.</div>`}</div>
-  <div class="card"><h3>Modération</h3><p>Signalements : <b>${state.reports.length}</b></p><p>Notifications : <b>${state.notifications.length}</b></p><p>Groupes : <b>${state.groups.length}</b></p><button class="btn secondary" data-action="adminUsers">Gérer les utilisateurs</button></div></div>
-  <div class="card" style="margin-top:14px"><h3>Utilisateurs</h3>${state.users.map(u=>`<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${isAdminUser(u)?"ADMIN":"UTILISATEUR"}</small></div>${!isAdminUser(u)?`<button class="btn ghost danger" data-action="adminDeleteUser" data-id="${u.id}">Supprimer</button>`:""}</div>`).join("")}</div>`;
+  if(!isAdminAccount()) return `${routeBackBar("Menu","menu")}<section class="card"><h2>Accès refusé</h2><p>Cette section est réservée à l'administrateur officiel.</p></section>`;
+
+  const users=Array.isArray(state.users)?state.users:[];
+  const posts=Array.isArray(state.posts)?state.posts:[];
+  const comments=Array.isArray(state.comments)?state.comments:[];
+  const messages=Array.isArray(state.messages)?state.messages:[];
+  const badgeRequests=Array.isArray(state.badgeRequests)?state.badgeRequests:[];
+  const reports=Array.isArray(state.reports)?state.reports:[];
+  const mediaCount=posts.filter(p=>p?.media_url||p?.mediaUrl||p?.media_type||p?.mediaType).length;
+  const verifiedCount=users.filter(u=>u?.verified||isAdminUser(u)).length;
+  const pendingBadges=badgeRequests.filter(r=>String(r.status||"pending").toLowerCase()==="pending").length;
+  const pendingReports=reports.filter(r=>String(r.status||"pending").toLowerCase()==="pending").length;
+
+  const recentUsers=users.slice(-5).reverse().map(u=>`
+    <div class="admin-row">
+      <div class="admin-avatar">${String(u.name||u.username||u.email||"?").slice(0,1).toUpperCase()}</div>
+      <div class="admin-grow"><b>${escapeHtml(u.name||u.username||u.email||"Utilisateur")}</b><small>${escapeHtml(u.email||"")}</small></div>
+      ${isAdminUser(u)?'<span class="admin-pill blue">✓ ADMIN</span>':''}
+    </div>`).join("") || `<div class="admin-empty">Aucun utilisateur</div>`;
+
+  const stats=[
+    ["👥","Utilisateurs",users.length],
+    ["📝","Publications",posts.length],
+    ["💬","Messages",messages.length],
+    ["🖼️","Médias",mediaCount],
+    ["🔵","Comptes vérifiés",verifiedCount],
+    ["🛡️","Signalements",pendingReports]
+  ];
+
+  return `${routeBackBar("Menu","menu")}
+  <section class="admin-dashboard">
+    <div class="admin-head">
+      <div>
+        <span class="eyebrow">TAFAß · ADMINISTRATION</span>
+        <h1>Tableau de bord</h1>
+        <p>Vue globale et gestion de la plateforme.</p>
+      </div>
+      <div class="admin-official"><span>✓</span><div><b>Admin officiel</b><small>Accès sécurisé</small></div></div>
+    </div>
+
+    <div class="admin-stat-grid">
+      ${stats.map(s=>`<div class="admin-stat"><span class="admin-stat-icon">${s[0]}</span><div><strong>${s[2]}</strong><small>${s[1]}</small></div></div>`).join("")}
+    </div>
+
+    <div class="admin-grid">
+      <div class="admin-panel">
+        <div class="admin-panel-title"><div><b>Activité</b><small>État actuel de Tafaß</small></div><span class="admin-live">● LIVE</span></div>
+        <div class="admin-progress-row"><span>Utilisateurs actifs</span><b>${users.length}</b></div>
+        <div class="admin-progress-row"><span>Publications</span><b>${posts.length}</b></div>
+        <div class="admin-progress-row"><span>Demandes badge en attente</span><b>${pendingBadges}</b></div>
+        <div class="admin-progress-row"><span>Signalements en attente</span><b>${pendingReports}</b></div>
+      </div>
+
+      <div class="admin-panel">
+        <div class="admin-panel-title"><div><b>Actions rapides</b><small>Administration</small></div></div>
+        <div class="admin-actions">
+          <button class="admin-action" data-action="adminUsers">👥<span>Utilisateurs<small>Gérer les comptes</small></span></button>
+          <button class="admin-action" data-action="adminReports">🛡️<span>Modération<small>${pendingReports} en attente</small></span></button>
+          <button class="admin-action" data-action="adminBadges">🔵<span>Badges bleus<small>${pendingBadges} demandes</small></span></button>
+          <button class="admin-action" data-action="adminPosts">📝<span>Publications<small>Modérer les contenus</small></span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="admin-panel">
+      <div class="admin-panel-title"><div><b>Utilisateurs récents</b><small>Derniers comptes chargés</small></div></div>
+      ${recentUsers}
+    </div>
+
+    <div class="admin-panel admin-security">
+      <div><span class="security-icon">🔐</span><div><b>Sécurité administrateur</b><small>Le statut Admin est lié au compte Supabase Auth officiel. Les autres comptes ne peuvent pas s'attribuer ce rôle depuis le client.</small></div></div>
+      <span class="admin-pill green">PROTÉGÉ</span>
+    </div>
+  </section>`;
 }
+
 function renderSuggestions(n){const users=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)).slice(0,n);return users.length?users.map(u=>`<div class="list-item">${avatar(u,"avatar sm")}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)}</small></div><button class="link-btn" data-action="addFriend" data-id="${u.id}">Ajouter</button></div>`).join(""):`<div class="empty">Pas encore de suggestions.</div>`;}
 
 function bindPageEvents(){
