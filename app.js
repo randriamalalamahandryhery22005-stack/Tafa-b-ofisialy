@@ -2068,7 +2068,7 @@ function renderGroup(groupId){
       <button type="button" class="group-tab" data-group-tab="media">Médias</button>
     </div>
 
-    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="join-group" data-group-id="${esc(g.id)}" data-action="view-group">Rejoindre</button></div>`:""}
+    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="joinGroup" data-group-id="${esc(g.id)}">Rejoindre</button></div>`:""}
 
     <div class="group-premium-grid">
       <main>
@@ -2076,9 +2076,9 @@ function renderGroup(groupId){
           <div class="group-composer-title">Créer une publication</div>
           <textarea data-group-post-content data-group-id="${esc(g.id)}" placeholder="Que souhaitez-vous partager dans ce groupe ?"></textarea>
           <div class="group-composer-actions">
-            <button data-action="view-group" type="button" data-group-pick="image" data-group-id="${esc(g.id)}">🖼️ Photo</button>
-            <button data-action="view-group" type="button" data-group-pick="video" data-group-id="${esc(g.id)}">🎥 Vidéo</button>
-            <button data-action="view-group" type="button" data-group-pick="file" data-group-id="${esc(g.id)}">📎 Fichier</button>
+            <button data-action="groupPick" type="button" data-group-pick="image" data-group-id="${esc(g.id)}">🖼️ Photo</button>
+            <button data-action="groupPick" type="button" data-group-pick="video" data-group-id="${esc(g.id)}">🎥 Vidéo</button>
+            <button data-action="groupPick" type="button" data-group-pick="file" data-group-id="${esc(g.id)}">📎 Fichier</button>
             <button type="button" data-group-poll="${esc(g.id)}">📊 Sondage</button>
             <button type="button" class="btn primary" data-group-publish="${esc(g.id)}">Publier</button>
           </div>
@@ -2097,7 +2097,7 @@ function renderGroup(groupId){
           <div class="side-title"><b>Membres</b><button type="button" data-group-tab="members">Voir tous</button></div>
           <div class="group-member-stack">${members.slice(0,8).map(u=>`<span title="${esc(u.name||u.username||"Membre")}">${esc(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</span>`).join("")||"Aucun membre"}</div>
         </div>
-        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${esc(g.id)}" data-action="view-group">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leave-group" data-group-id="${esc(g.id)}" data-action="view-group">Quitter le groupe</button></div>`:""}
+        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manageGroup" data-group-id="${esc(g.id)}">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leaveGroup" data-group-id="${esc(g.id)}">Quitter le groupe</button></div>`:""}
       </aside>
     </div>
   </section>`;
@@ -2523,7 +2523,7 @@ function renderAdmin(){
   const recentUsers=users.slice(-5).reverse().map(u=>`
     <div class="admin-row">
       <div class="admin-avatar">${String(u.name||u.username||u.email||"?").slice(0,1).toUpperCase()}</div>
-      <div class="admin-grow"><b>${esc(u.name||u.username||u.email||"Utilisateur")}</b><small>${esc(u.email||"")}</small></div>
+      <div class="admin-grow"><b>${escapeHtml(u.name||u.username||u.email||"Utilisateur")}</b><small>${escapeHtml(u.email||"")}</small></div>
       ${isAdminUser(u)?'<span class="admin-pill blue">✓ ADMIN</span>':''}
     </div>`).join("") || `<div class="admin-empty">Aucun utilisateur</div>`;
 
@@ -2612,7 +2612,7 @@ function bindPageEvents(){
   const mk=$("marketSearch");if(mk)mk.oninput=()=>{window.marketSearch=String(mk.value||"");clearTimeout(window.marketSearchTimer);window.marketSearchTimer=setTimeout(render,180);};
 }
 async function handleAction(e,el){
-  const a=el.dataset.action,id=el.dataset.id;
+  const a=el.dataset.action,id=el.dataset.id||el.dataset.groupId;
   if(a==="admin"){ if(!isAdminAccount()) return toast("Accès administrateur refusé"); return routeTo("admin"); }
   if(a==="closeModal")return closeModal();
   if(a==="copyLink"){ closeModal(); return copyAppLink(id); }
@@ -2748,6 +2748,11 @@ async function handleAction(e,el){
   if(a==="switchPage"){state.pageMode=id;editingPageId=id;pageTab="posts";save();toast("Vous êtes passé en mode Page");return routeTo("pageView");}
   if(a==="leavePageMode"){state.pageMode=null;save();return routeTo("profile");}
   if(a==="editPage")return editPage(id);
+  if(a==="groupPick"){
+    const input=document.querySelector(`[data-group-file-input][data-group-id="${CSS.escape(el.dataset.groupId||"")}"]`);
+    if(input) input.click();
+    return;
+  }
   if(a==="createGroup")return createGroup();
   if(a==="joinGroup")return joinGroup(id);
   if(a==="leaveGroup")return leaveGroup(id);
@@ -4119,12 +4124,6 @@ async function createAccount(){
   }
 }
 document.addEventListener("click",async e=>{
-  const join=e.target.closest?.('[data-action="join-group"]');
-  if(join){e.preventDefault(); await joinGroup(join.dataset.groupId); return;}
-  const view=e.target.closest?.('[data-action="viewGroup"]');
-  if(view){e.preventDefault(); viewGroup(view.dataset.groupId || view.dataset.id); return;}
-  const leave=e.target.closest?.('[data-action="leave-group"]');
-  if(leave){e.preventDefault(); await leaveGroup(leave.dataset.groupId); return;}
   const publish=e.target.closest?.('[data-group-publish]');
   if(publish){
     e.preventDefault();
