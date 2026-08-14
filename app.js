@@ -2032,32 +2032,32 @@ function renderGroup(groupId){
     const media=p.media_url||p.mediaUrl;
     const mt=String(p.media_type||p.mediaType||"").toLowerCase();
     let mediaHtml="";
-    if(media && mt.startsWith("image")) mediaHtml=`<img class="group-post-media" src="${escapeHtml(media)}" alt="">`;
-    else if(media && mt.startsWith("video")) mediaHtml=`<video class="group-post-media" src="${escapeHtml(media)}" controls playsinline></video>`;
-    else if(media && mt.startsWith("audio")) mediaHtml=`<audio class="group-post-audio" src="${escapeHtml(media)}" controls></audio>`;
-    else if(media) mediaHtml=`<a class="group-file-download" href="${escapeHtml(media)}" target="_blank" rel="noopener">📎 ${escapeHtml(p.file_name||p.fileName||"Fichier")} · Télécharger</a>`;
+    if(media && mt.startsWith("image")) mediaHtml=`<img class="group-post-media" src="${esc(media)}" alt="">`;
+    else if(media && mt.startsWith("video")) mediaHtml=`<video class="group-post-media" src="${esc(media)}" controls playsinline></video>`;
+    else if(media && mt.startsWith("audio")) mediaHtml=`<audio class="group-post-audio" src="${esc(media)}" controls></audio>`;
+    else if(media) mediaHtml=`<a class="group-file-download" href="${esc(media)}" target="_blank" rel="noopener">📎 ${esc(p.file_name||p.fileName||"Fichier")} · Télécharger</a>`;
     return `<article class="group-post-card">
-      <div class="group-post-head"><div class="group-mini-avatar">${escapeHtml(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</div><div><b>${escapeHtml(u.name||u.username||"Membre")}</b><small>${escapeHtml(p.created_at||p.createdAt||"")}</small></div></div>
-      ${p.content||p.text?`<p class="group-post-text">${escapeHtml(p.content||p.text)}</p>`:""}${mediaHtml}
+      <div class="group-post-head"><div class="group-mini-avatar">${esc(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</div><div><b>${esc(u.name||u.username||"Membre")}</b><small>${esc(p.created_at||p.createdAt||"")}</small></div></div>
+      ${p.content||p.text?`<p class="group-post-text">${esc(p.content||p.text)}</p>`:""}${mediaHtml}
     </article>`;
   }).join("") || `<div class="group-empty-feed">Aucune publication dans ce groupe pour le moment.</div>`;
 
   const pollCards=polls.map(p=>{
     const total=(p.votes||[]).length;
-    return `<article class="group-post-card group-poll-card"><div class="group-post-head"><div class="group-mini-avatar">📊</div><div><b>Sondage</b><small>${escapeHtml(p.created_at||"")}</small></div></div><h3>${escapeHtml(p.question||"")}</h3>
+    return `<article class="group-post-card group-poll-card"><div class="group-post-head"><div class="group-mini-avatar">📊</div><div><b>Sondage</b><small>${esc(p.created_at||"")}</small></div></div><h3>${esc(p.question||"")}</h3>
       <div class="group-poll-options">${(p.options||[]).map(o=>{
         const count=(p.votes||[]).filter(v=>String(v.option_id)===String(o.id)).length;
         const pct=total?Math.round(count*100/total):0;
-        return `<button type="button" class="group-poll-option" data-group-vote="${escapeHtml(o.id)}" data-poll-id="${escapeHtml(p.id)}"><span>${escapeHtml(o.option_text)}</span><b>${pct}%</b><i style="width:${pct}%"></i></button>`;
+        return `<button type="button" class="group-poll-option" data-group-vote="${esc(o.id)}" data-poll-id="${esc(p.id)}"><span>${esc(o.option_text)}</span><b>${pct}%</b><i style="width:${pct}%"></i></button>`;
       }).join("")}</div><small>${total} vote${total>1?"s":""}</small></article>`;
   }).join("");
   return `${routeBackBar("Groupes","groups")}
   <section class="group-premium">
-    <div class="group-cover" ${cover?`style="background-image:url('${escapeHtml(cover)}')"`:""}>
+    <div class="group-cover" ${cover?`style="background-image:url('${esc(cover)}')"`:""}>
       <div class="group-cover-shade"></div>
       <div class="group-hero-content">
-        <div class="group-avatar-large">${avatar?`<img src="${escapeHtml(avatar)}" alt="">`:"👥"}</div>
-        <div class="group-title-wrap"><span class="group-chip">${visibility==="private"?"🔒 PRIVÉ":"🌐 PUBLIC"}</span><h1>${escapeHtml(g.name||"Groupe")}</h1><p>${members.length} membre${members.length>1?"s":""} · ${mediaPosts.length} média${mediaPosts.length>1?"s":""}</p></div>
+        <div class="group-avatar-large">${avatar?`<img src="${esc(avatar)}" alt="">`:"👥"}</div>
+        <div class="group-title-wrap"><span class="group-chip">${visibility==="private"?"🔒 PRIVÉ":"🌐 PUBLIC"}</span><h1>${esc(g.name||"Groupe")}</h1><p>${members.length} membre${members.length>1?"s":""} · ${mediaPosts.length} média${mediaPosts.length>1?"s":""}</p></div>
       </div>
     </div>
 
@@ -2068,21 +2068,21 @@ function renderGroup(groupId){
       <button type="button" class="group-tab" data-group-tab="media">Médias</button>
     </div>
 
-    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="join-group" data-group-id="${escapeHtml(g.id)}" data-action="view-group">Rejoindre</button></div>`:""}
+    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="join-group" data-group-id="${esc(g.id)}" data-action="view-group">Rejoindre</button></div>`:""}
 
     <div class="group-premium-grid">
       <main>
         ${isMember?`<div class="group-composer">
           <div class="group-composer-title">Créer une publication</div>
-          <textarea data-group-post-content data-group-id="${escapeHtml(g.id)}" placeholder="Que souhaitez-vous partager dans ce groupe ?"></textarea>
+          <textarea data-group-post-content data-group-id="${esc(g.id)}" placeholder="Que souhaitez-vous partager dans ce groupe ?"></textarea>
           <div class="group-composer-actions">
-            <button data-action="view-group" type="button" data-group-pick="image" data-group-id="${escapeHtml(g.id)}">🖼️ Photo</button>
-            <button data-action="view-group" type="button" data-group-pick="video" data-group-id="${escapeHtml(g.id)}">🎥 Vidéo</button>
-            <button data-action="view-group" type="button" data-group-pick="file" data-group-id="${escapeHtml(g.id)}">📎 Fichier</button>
-            <button type="button" data-group-poll="${escapeHtml(g.id)}">📊 Sondage</button>
-            <button type="button" class="btn primary" data-group-publish="${escapeHtml(g.id)}">Publier</button>
+            <button data-action="view-group" type="button" data-group-pick="image" data-group-id="${esc(g.id)}">🖼️ Photo</button>
+            <button data-action="view-group" type="button" data-group-pick="video" data-group-id="${esc(g.id)}">🎥 Vidéo</button>
+            <button data-action="view-group" type="button" data-group-pick="file" data-group-id="${esc(g.id)}">📎 Fichier</button>
+            <button type="button" data-group-poll="${esc(g.id)}">📊 Sondage</button>
+            <button type="button" class="btn primary" data-group-publish="${esc(g.id)}">Publier</button>
           </div>
-          <input type="file" hidden data-group-file-input data-group-id="${escapeHtml(g.id)}" multiple>
+          <input type="file" hidden data-group-file-input data-group-id="${esc(g.id)}" multiple>
         </div>`:""}
         <div class="group-feed">${pollCards}${postCard}</div>
       </main>
@@ -2090,14 +2090,14 @@ function renderGroup(groupId){
       <aside>
         <div class="group-side-card">
           <div class="side-title"><b>À propos</b><button type="button" data-group-tab="about">Voir plus</button></div>
-          <p>${escapeHtml(about)}</p>
+          <p>${esc(about)}</p>
           <div class="group-facts"><span>👥 ${members.length} membres</span><span>🌐 ${visibility==="private"?"Groupe privé":"Groupe public"}</span></div>
         </div>
         <div class="group-side-card">
           <div class="side-title"><b>Membres</b><button type="button" data-group-tab="members">Voir tous</button></div>
-          <div class="group-member-stack">${members.slice(0,8).map(u=>`<span title="${escapeHtml(u.name||u.username||"Membre")}">${escapeHtml(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</span>`).join("")||"Aucun membre"}</div>
+          <div class="group-member-stack">${members.slice(0,8).map(u=>`<span title="${esc(u.name||u.username||"Membre")}">${esc(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</span>`).join("")||"Aucun membre"}</div>
         </div>
-        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${escapeHtml(g.id)}" data-action="view-group">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leave-group" data-group-id="${escapeHtml(g.id)}" data-action="view-group">Quitter le groupe</button></div>`:""}
+        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${esc(g.id)}" data-action="view-group">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leave-group" data-group-id="${esc(g.id)}" data-action="view-group">Quitter le groupe</button></div>`:""}
       </aside>
     </div>
   </section>`;
@@ -2523,7 +2523,7 @@ function renderAdmin(){
   const recentUsers=users.slice(-5).reverse().map(u=>`
     <div class="admin-row">
       <div class="admin-avatar">${String(u.name||u.username||u.email||"?").slice(0,1).toUpperCase()}</div>
-      <div class="admin-grow"><b>${escapeHtml(u.name||u.username||u.email||"Utilisateur")}</b><small>${escapeHtml(u.email||"")}</small></div>
+      <div class="admin-grow"><b>${esc(u.name||u.username||u.email||"Utilisateur")}</b><small>${esc(u.email||"")}</small></div>
       ${isAdminUser(u)?'<span class="admin-pill blue">✓ ADMIN</span>':''}
     </div>`).join("") || `<div class="admin-empty">Aucun utilisateur</div>`;
 
@@ -2614,11 +2614,6 @@ function bindPageEvents(){
 async function handleAction(e,el){
   const a=el.dataset.action,id=el.dataset.id;
   if(a==="admin"){ if(!isAdminAccount()) return toast("Accès administrateur refusé"); return routeTo("admin"); }
-  if(a==="viewGroup" || a==="view-group"){
-    const gid=String(el.dataset.groupId||el.dataset.id||"").trim();
-    if(!gid) return toast("ID du groupe manquant.");
-    return viewGroup(gid);
-  }
   if(a==="closeModal")return closeModal();
   if(a==="copyLink"){ closeModal(); return copyAppLink(id); }
   if(a==="nativeShareLink"){ const url=appLink(id); if(navigator.share){navigator.share({title:"Tafaß",url}).catch(()=>{});} else copyAppLink(id,"Lien copié"); return; }
@@ -3607,22 +3602,28 @@ async function joinGroup(id){try{await joinSupabaseGroup(id);}catch(e){toast("Im
 async function leaveGroup(id){try{await leaveSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
 function viewGroup(id){
   const gid=String(id||"").trim();
-  if(!gid) return toast("ID du groupe manquant.");
+  if(!gid){ toast("Groupe introuvable."); return; }
 
-  selectedGroupId=gid;
-  route="groupView";
-  render();
+  const open=()=>{
+    const g=(state.groups||[]).find(x=>String(x.id)===gid);
+    if(!g){ toast("Groupe introuvable."); return; }
+    selectedGroupId=gid;
+    route="groupView";
+    render();
+  };
 
-  if(!(state.groups||[]).some(g=>String(g.id)===gid) && supabaseReady() && typeof loadSupabaseGroups==="function"){
-    loadSupabaseGroups().then(()=>{
-      if(route==="groupView" && String(selectedGroupId)===gid) render();
-    }).catch(err=>{
-      console.error("viewGroup load:",err);
+  const loaded=(state.groups||[]).some(x=>String(x.id)===gid);
+  if(loaded){ open(); return; }
+
+  if(supabaseReady() && typeof loadSupabaseGroups==="function"){
+    loadSupabaseGroups().then(open).catch(err=>{
+      console.error("Chargement groupe:",err);
       toast("Impossible de charger le groupe.");
     });
+    return;
   }
+  toast("Impossible de charger le groupe.");
 }
-
 function manageGroup(id){
   const g=(state.groups||[]).find(x=>String(x.id)===String(id));
   if(!g||String(g.owner_id)!==String(state.current))return toast("Accès refusé.");
@@ -4117,3 +4118,153 @@ async function createAccount(){
     setButton(originalText,false);
   }
 }
+document.addEventListener("click",async e=>{
+  const join=e.target.closest?.('[data-action="join-group"]');
+  if(join){e.preventDefault(); await joinGroup(join.dataset.groupId); return;}
+  const view=e.target.closest?.('[data-action="viewGroup"]');
+  if(view){e.preventDefault(); viewGroup(view.dataset.groupId || view.dataset.id); return;}
+  const leave=e.target.closest?.('[data-action="leave-group"]');
+  if(leave){e.preventDefault(); await leaveGroup(leave.dataset.groupId); return;}
+  const publish=e.target.closest?.('[data-group-publish]');
+  if(publish){
+    e.preventDefault();
+    const gid=publish.dataset.groupPublish;
+    const box=document.querySelector(`[data-group-post-content][data-group-id="${CSS.escape(gid)}"]`);
+    const input=document.querySelector(`[data-group-file-input][data-group-id="${CSS.escape(gid)}"]`);
+    const file=input?.files?.[0]||null;
+    publish.disabled=true;
+    try{
+      await createGroupPost(gid,box?.value?.trim()||"",file);
+      if(box)box.value="";
+      if(input)input.value="";
+      await loadSupabasePosts(); render(); toast("Publication envoyée.");
+    }catch(err){toast("Publication impossible : "+(err?.message||"erreur"));}
+    finally{publish.disabled=false;}
+    return;
+  }
+  const pick=e.target.closest?.('[data-group-pick]');
+  if(pick){
+    e.preventDefault();
+    const input=document.querySelector(`[data-group-file-input][data-group-id="${CSS.escape(pick.dataset.groupId)}"]`);
+    if(input) input.click();
+    return;
+  }
+  const poll=e.target.closest?.('[data-group-poll]');
+  if(poll){
+    e.preventDefault();
+    const gid=poll.dataset.groupPoll;
+    modal("Créer un sondage",`<form id="groupPollForm" class="premium-form">
+      <label>Question<textarea id="pollQuestion" required maxlength="300"></textarea></label>
+      <label>Choix 1<input id="poll1" required></label>
+      <label>Choix 2<input id="poll2" required></label>
+      <label>Choix 3<input id="poll3"></label>
+      <label>Choix 4<input id="poll4"></label>
+      <button class="btn primary wide">Publier le sondage</button>
+    </form>`);
+    $("groupPollForm").onsubmit=async ev=>{
+      ev.preventDefault();
+      const opts=["poll1","poll2","poll3","poll4"].map(id=>$(id)?.value||"");
+      try{await createGroupPoll(gid,$("pollQuestion").value,opts);closeModal();render();toast("Sondage publié en temps réel.");}
+      catch(err){toast("Sondage impossible : "+(err?.message||"erreur"));}
+    };
+    return;
+  }
+  const vote=e.target.closest?.('[data-group-vote]');
+  if(vote){
+    e.preventDefault();
+    try{await voteGroupPoll(vote.dataset.pollId,vote.dataset.groupVote);}catch(err){toast("Vote impossible : "+(err?.message||"erreur"));}
+    return;
+  }
+});
+async function boot(){
+  try{applyTheme();}catch(e){console.error(e)}
+  try{initAuth();}catch(e){console.error("initAuth:",e)}
+  try{setupGlobal();}catch(e){console.error("setupGlobal:",e)}
+  try{openDeepLink();}catch(e){console.error("deepLink:",e)}
+  try{localizeApp();}catch(e){console.error("localize:",e)}
+  const splash=$("splash");
+  if(splash){
+    const dots=[...splash.querySelectorAll(".splash-dots i")];
+    dots.forEach((dot,i)=>setTimeout(()=>{dot.classList.add("active");setTimeout(()=>{dot.classList.remove("active");dot.classList.add("done");},260);},i*500));
+  }
+  await hydrateSupabaseSession();
+  if(state.current){ try{ await loadSupabaseMessages(); }catch(e){} try{ await startTafaRealtime(); }catch(e){console.warn('Realtime init:',e)} }
+  const leave=()=>{
+    if(splash){splash.classList.add("hide");setTimeout(()=>splash.remove(),550);}
+    if(!state.current){$("authScreen").classList.remove("hidden");$("appScreen").classList.add("hidden")}
+    else render();
+  };
+  setTimeout(leave,3050);
+}
+
+window.addEventListener("error",e=>{console.error(e.error||e.message);if($("splash")){$("splash").classList.add("hide");$("authScreen").classList.remove("hidden");}});
+if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",boot);else boot();
+})();
+
+
+// Delete button handler (delegated, so it also works for dynamically rendered feed items).
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-action="delete-post"]');
+  if (!button) return;
+
+  const postId = button.dataset.postId;
+  if (!postId) return;
+
+  if (!confirm('Supprimer cette publication ? Cette action est irréversible.')) return;
+
+  button.disabled = true;
+  try {
+    let post = null;
+
+    // Prefer an existing in-memory post list when available.
+    const candidates = [
+      window.posts,
+      window.currentPosts,
+      window.feedPosts,
+      window.allPosts
+    ];
+    for (const list of candidates) {
+      if (Array.isArray(list)) {
+        post = list.find(p => String(p.id) === String(postId));
+        if (post) break;
+      }
+    }
+
+    // Fallback: fetch only the selected post.
+    if (!post) {
+      const client = window.supabaseClient;
+      const { data, error } = await client.from('posts').select('*').eq('id', postId).single();
+      if (error) throw error;
+      post = data;
+    }
+
+    const ownerId = post.owner_id || post.user_id || post.ownerId;
+    const currentUser = window.supabaseClient ? (await window.supabaseClient.auth.getUser()).data?.user : null;
+    if (!currentUser?.id) throw new Error('Vous devez être connecté.');
+    if (ownerId && String(ownerId) !== String(currentUser.id)) {
+      throw new Error('Vous ne pouvez supprimer que vos propres publications.');
+    }
+
+    await tafasDeletePublication(post);
+
+    const card = button.closest('[data-post-id], article, .post-card, .post');
+    if (card) card.remove();
+
+    // Refresh if the existing app exposes a feed loader.
+    const refresh =
+      window.loadPosts ||
+      window.fetchPosts ||
+      window.renderPosts ||
+      window.loadFeed;
+    if (typeof refresh === 'function') {
+      try { await refresh(); } catch (e) { console.warn('Feed refresh:', e); }
+    }
+  } catch (error) {
+    console.error('Delete publication:', error);
+    alert(error?.message || 'Tsy voafafa ilay publication.');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+
