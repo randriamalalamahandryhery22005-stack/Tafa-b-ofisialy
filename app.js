@@ -1,4 +1,26 @@
 
+/* TAFA_GROUP_OPEN_CLICK_FIX */
+document.addEventListener("click", function(e){
+  const el=e.target.closest?.(
+    '[data-action="view-group"],[data-action="open-group"],[data-group-id][data-action="view"],[data-group-id][data-route="group"],[data-group-id][data-page="group"],[data-group-open]'
+  );
+  if(!el) return;
+  const gid=el.getAttribute("data-group-id") || el.getAttribute("data-id");
+  if(!gid) return;
+  e.preventDefault();
+  e.stopPropagation();
+  try{
+    if(typeof openGroup==="function"){ openGroup(gid); return; }
+    if(typeof navigateToGroup==="function"){ navigateToGroup(gid); return; }
+    route="group";
+    state.selectedGroupId=gid;
+    state.currentGroupId=gid;
+    if(typeof render==="function") render();
+    else if(typeof renderApp==="function") renderApp();
+  }catch(err){ console.error("Group navigation error:",err); }
+}, true);
+
+
 /* GROUP SEARCH */
 document.addEventListener("input",function(e){if(e.target?.id==="groupSearchInput"){window.groupSearch=e.target.value||"";render();}});
 
@@ -2067,7 +2089,7 @@ function renderGroup(groupId){
       <button type="button" class="group-tab" data-group-tab="media">Médias</button>
     </div>
 
-    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="join-group" data-group-id="${escapeHtml(g.id)}">Rejoindre</button></div>`:""}
+    ${!isMember?`<div class="group-join-banner"><div><b>Rejoignez ce groupe</b><small>Participez aux publications, sondages et discussions.</small></div><button class="btn primary" data-action="join-group" data-group-id="${escapeHtml(g.id)}" data-action="view-group">Rejoindre</button></div>`:""}
 
     <div class="group-premium-grid">
       <main>
@@ -2075,9 +2097,9 @@ function renderGroup(groupId){
           <div class="group-composer-title">Créer une publication</div>
           <textarea data-group-post-content data-group-id="${escapeHtml(g.id)}" placeholder="Que souhaitez-vous partager dans ce groupe ?"></textarea>
           <div class="group-composer-actions">
-            <button type="button" data-group-pick="image" data-group-id="${escapeHtml(g.id)}">🖼️ Photo</button>
-            <button type="button" data-group-pick="video" data-group-id="${escapeHtml(g.id)}">🎥 Vidéo</button>
-            <button type="button" data-group-pick="file" data-group-id="${escapeHtml(g.id)}">📎 Fichier</button>
+            <button data-action="view-group" type="button" data-group-pick="image" data-group-id="${escapeHtml(g.id)}">🖼️ Photo</button>
+            <button data-action="view-group" type="button" data-group-pick="video" data-group-id="${escapeHtml(g.id)}">🎥 Vidéo</button>
+            <button data-action="view-group" type="button" data-group-pick="file" data-group-id="${escapeHtml(g.id)}">📎 Fichier</button>
             <button type="button" data-group-poll="${escapeHtml(g.id)}">📊 Sondage</button>
             <button type="button" class="btn primary" data-group-publish="${escapeHtml(g.id)}">Publier</button>
           </div>
@@ -2096,7 +2118,7 @@ function renderGroup(groupId){
           <div class="side-title"><b>Membres</b><button type="button" data-group-tab="members">Voir tous</button></div>
           <div class="group-member-stack">${members.slice(0,8).map(u=>`<span title="${escapeHtml(u.name||u.username||"Membre")}">${escapeHtml(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</span>`).join("")||"Aucun membre"}</div>
         </div>
-        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${escapeHtml(g.id)}">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leave-group" data-group-id="${escapeHtml(g.id)}">Quitter le groupe</button></div>`:""}
+        ${isOwner?`<div class="group-side-card"><b>Administration du groupe</b><p>Vous êtes propriétaire de ce groupe.</p><button type="button" class="btn ghost" data-action="manage-group" data-group-id="${escapeHtml(g.id)}" data-action="view-group">Gérer le groupe</button></div>`:isMember?`<div class="group-side-card"><button type="button" class="btn ghost wide" data-action="leave-group" data-group-id="${escapeHtml(g.id)}" data-action="view-group">Quitter le groupe</button></div>`:""}
       </aside>
     </div>
   </section>`;
