@@ -772,6 +772,7 @@ async function hydrateSupabaseSession(){
     id:session.user.id,
     email:session.user.email
   });
+  adminizeUser(u);
   state.users=[u];
   state.current=u.id;
 
@@ -1071,6 +1072,23 @@ const ADMIN = {
   followers:0, following:0, friends:0
 };
 
+function isAdminAccount(entity=me()){
+  if(!entity) return false;
+  const email=String(entity.email||"").trim().toLowerCase();
+  const username=String(entity.username||"").trim().toLowerCase();
+  return entity.id===ADMIN_ID ||
+    email===String(ADMIN.email).trim().toLowerCase() ||
+    username===String(ADMIN.username).trim().toLowerCase();
+}
+function isAdminUser(entity){ return isAdminAccount(entity); }
+function adminizeUser(entity){
+  if(!entity || !isAdminAccount(entity)) return entity;
+  entity.verified=true;
+  entity.admin=true;
+  entity.type="account";
+  return entity;
+}
+
 const countryData = [
 ["Afghanistan","+93"],["Albanie","+355"],["Algérie","+213"],["Andorre","+376"],["Angola","+244"],["Antigua-et-Barbuda","+1"],["Argentine","+54"],["Arménie","+374"],["Australie","+61"],["Autriche","+43"],["Azerbaïdjan","+994"],
 ["Bahamas","+1"],["Bahreïn","+973"],["Bangladesh","+880"],["Barbade","+1"],["Belgique","+32"],["Belize","+501"],["Bénin","+229"],["Bhoutan","+975"],["Biélorussie","+375"],["Bolivie","+591"],["Bosnie-Herzégovine","+387"],["Botswana","+267"],["Brésil","+55"],["Brunei","+673"],["Bulgarie","+359"],["Burkina Faso","+226"],["Burundi","+257"],
@@ -1238,7 +1256,7 @@ function avatar(entity, cls="avatar"){
   const src = entity?.avatar || DEFAULT_AVATAR_SVG;
   return `<span class="${cls}"><img src="${src}" alt="${esc(displayName(entity)||"Utilisateur")}" loading="lazy" onerror="this.onerror=null;this.src='${DEFAULT_AVATAR_SVG}'"></span>`;
 }
-function verified(entity){ return entity?.verified ? `<span class="verified-badge">Compte vérifié</span>` : ""; }
+function verified(entity){ return isAdminAccount(entity) || entity?.verified ? `<span class="verified-badge">✓ Compte vérifié</span>` : ""; }
 function typePill(entity){ return `<span class="type-pill">${entity?.type==="page"?"PAGE":"COMPTE"}</span>`; }
 function timeAgo(ts){ const d=Date.now()-new Date(ts).getTime(),m=Math.floor(d/60000),h=Math.floor(m/60),day=Math.floor(h/24); if(m<1)return"à l'instant";if(m<60)return`il y a ${m} min`;if(h<24)return`il y a ${h} h`;if(day<7)return`il y a ${day} j`;return new Date(ts).toLocaleDateString("fr-FR"); }
 function toast(t){
@@ -1447,7 +1465,7 @@ function renderFriends(){
   let friends=state.friendships.filter(f=>f.a===state.current||f.b===state.current).map(f=>findUser(f.a===state.current?f.b:f.a)).filter(Boolean);
   const received=state.friendRequests.filter(r=>r.to===state.current&&r.status==="pending").map(r=>findUser(r.from)).filter(Boolean);
   const sent=state.friendRequests.filter(r=>r.from===state.current&&r.status==="pending").map(r=>findUser(r.to)).filter(Boolean);
-  let suggestions=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)&&u.id!==ADMIN_ID);
+  let suggestions=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)&&!isAdminUser(u));
   const q=friendSearch.trim().toLowerCase();
   const match=u=>!q||`${displayName(u)} ${u.username||""}`.toLowerCase().includes(q);
   friends=friends.filter(match);
@@ -1654,7 +1672,7 @@ function renderProfile(u){
   const friends=friendsList.length;
   const followers=state.follows.filter(f=>f.to===u.id).length;
   const following=state.follows.filter(f=>f.from===u.id).length;
-  const own=u.id===state.current, admin=u.id===ADMIN_ID;
+  const own=u.id===state.current, admin=isAdminUser(u);
   const coverStyle=u.cover?`background-image:url('${esc(u.cover)}')`:"";
   const followExists=state.follows.some(f=>f.from===state.current&&f.to===u.id);
   const pseudo=u.pseudo?` (${esc(u.pseudo)})`:"";
@@ -1962,7 +1980,7 @@ async function switchSupabaseAccount(email){
 function renderMenu(){
   const pageBar=pageContextBar();
   const u=me();
-  const items=MENU_ITEMS.filter(([id])=>id!=="admin"||u?.id===ADMIN_ID);
+  const items=MENU_ITEMS.filter(([id])=>id!=="admin"||isAdminAccount(u));
   return `${routeBackBar("Actualités","home")}${pageBar}<section class="menu-premium-page menu-v86">
     <div class="menu-identity-v86">
       <div class="menu-profile-v86" data-route="profile">
@@ -2214,13 +2232,13 @@ function renderAbout(){
   <div class="about-description-v90"><h2>Notre mission</h2><p>Tafaß permet de communiquer, publier des photos et vidéos, partager des Stories et Reels, discuter en privé, créer des groupes et développer des Pages professionnelles.</p><div class="about-features-v90"><span>Actualités</span><span>Messages</span><span>Amis</span><span>Pages</span><span>Vidéos</span><span>Marketplace</span><span>Groupes</span><span>Notifications</span></div></div></section>`;
 }
 function renderAdmin(){
-  if(state.current!==ADMIN_ID)return`${routeBackBar("Menu","menu")}<div class="card empty"><b>Accès refusé.</b><p>Le panneau administrateur est réservé au compte officiel.</p></div>`;
+  if(!isAdminAccount())return`${routeBackBar("Menu","menu")}<div class="card empty"><b>Accès refusé.</b><p>Le panneau administrateur est réservé au compte officiel.</p></div>`;
   const pending=state.badgeRequests.filter(r=>r.status==="pending");
   return `${routeBackBar("Menu","menu")}<div class="page-head"><div><h1>Administration Tafaß</h1><p>Gestion globale et modération.</p></div><span class="verified-badge">ADMIN OFFICIEL</span></div>
   <div class="admin-stat"><div class="card"><b>${state.users.length}</b><small>Utilisateurs</small></div><div class="card"><b>${state.pages.length}</b><small>Pages</small></div><div class="card"><b>${state.posts.length}</b><small>Publications</small></div><div class="card"><b>${state.messages.length}</b><small>Messages</small></div></div>
   <div class="grid-2" style="margin-top:14px"><div class="card"><h3>Demandes de badge</h3>${pending.length?pending.map(r=>`<div class="list-item"><div class="list-main"><b>${esc(displayName(findUser(r.userId)))}</b><small>${esc(r.category||"")}</small></div><button class="btn primary" data-action="approveBadge" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectBadge" data-id="${r.id}">Refuser</button></div>`).join(""):`<div class="empty">Aucune demande.</div>`}</div>
   <div class="card"><h3>Modération</h3><p>Signalements : <b>${state.reports.length}</b></p><p>Notifications : <b>${state.notifications.length}</b></p><p>Groupes : <b>${state.groups.length}</b></p><button class="btn secondary" data-action="adminUsers">Gérer les utilisateurs</button></div></div>
-  <div class="card" style="margin-top:14px"><h3>Utilisateurs</h3>${state.users.map(u=>`<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${u.id===ADMIN_ID?"ADMIN":"UTILISATEUR"}</small></div>${u.id!==ADMIN_ID?`<button class="btn ghost danger" data-action="adminDeleteUser" data-id="${u.id}">Supprimer</button>`:""}</div>`).join("")}</div>`;
+  <div class="card" style="margin-top:14px"><h3>Utilisateurs</h3>${state.users.map(u=>`<div class="list-item">${avatar(u)}<div class="list-main"><b>${esc(displayName(u))} ${verified(u)}</b><small>@${esc(u.username)} · ${isAdminUser(u)?"ADMIN":"UTILISATEUR"}</small></div>${!isAdminUser(u)?`<button class="btn ghost danger" data-action="adminDeleteUser" data-id="${u.id}">Supprimer</button>`:""}</div>`).join("")}</div>`;
 }
 function renderSuggestions(n){const users=state.users.filter(u=>u.id!==state.current&&!isFriend(u.id)).slice(0,n);return users.length?users.map(u=>`<div class="list-item">${avatar(u,"avatar sm")}<div class="list-main"><b>${esc(displayName(u))}</b><small>@${esc(u.username)}</small></div><button class="link-btn" data-action="addFriend" data-id="${u.id}">Ajouter</button></div>`).join(""):`<div class="empty">Pas encore de suggestions.</div>`;}
 
@@ -3194,6 +3212,17 @@ function openFindFriends(){modal("Trouver des amis",`<input id="friendSearch" pl
 function createEvent(){modal("Créer un événement",`<form id="eventForm"><label>Nom<input id="eventName" required></label><label>Date<input id="eventDate" type="datetime-local" required></label><label>Description<textarea id="eventDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("eventForm").onsubmit=e=>{e.preventDefault();state.events.push({id:uid("event"),ownerId:state.current,name:$("eventName").value,date:$("eventDate").value,description:$("eventDesc").value});save();closeModal();render();};}
 function renderBadge(){
   const u=me();
+  if(isAdminAccount(u)){
+    return `${routeBackBar("Menu","menu")}<section class="badge-page-v94">
+      <div class="badge-hero-v94">
+        <div class="badge-hero-icon-v94">✓</div>
+        <div><span class="eyebrow">TAFAß · COMPTE OFFICIEL</span><h1>Badge bleu</h1><p>Le compte officiel Tafaß bénéficie automatiquement de la vérification.</p></div>
+        <span class="badge-status-v94 approved">Badge actif</span>
+      </div>
+      <div class="badge-info-card-v94"><div><b>Compte administrateur</b><small>Accès aux fonctions d’administration et de modération.</small></div><strong>OFFICIEL</strong></div>
+      <div class="card"><h3>✓ Vérification permanente</h3><p>Le badge bleu du compte officiel ne nécessite pas de demande ni de paiement.</p></div>
+    </section>`;
+  }
   const mine=(state.badgeRequests||[]).filter(r=>r.userId===state.current).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   const latest=mine[0];
   const statusLabel=latest?.status==="approved"?"Badge approuvé":latest?.status==="rejected"?"Demande refusée":latest?"Demande en attente":"Aucune demande";
