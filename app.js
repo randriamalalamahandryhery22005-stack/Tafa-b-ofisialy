@@ -88,6 +88,7 @@ function stopTafaRealtime(){
   if(!supabaseReady()) return;
   tafaRealtimeChannels.forEach(ch=>{try{SB.removeChannel(ch)}catch(e){}});
   tafaRealtimeChannels=[];
+  if(callSignalChannel){try{SB.removeChannel(callSignalChannel)}catch(e){} callSignalChannel=null;}
 }
 async function loadSupabaseNotifications(){
   if(!supabaseReady()||!state.current) return;
@@ -107,6 +108,7 @@ async function startTafaRealtime(){
   if(!supabaseReady()||!state.current) return;
   stopTafaRealtime();
   await loadSupabaseNotifications();
+  startCallSignalChannel();
 
   // V18.4 REALTIME: each channel is scoped when possible to avoid
   // unnecessary refreshes while keeping the existing UI unchanged.
@@ -125,12 +127,7 @@ async function startTafaRealtime(){
     ['story_replies','story-reply-change',()=>loadSupabaseStories().then(render)],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)],
-    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)],
-    ['pages','page-change',()=>loadSupabasePagesAndGroups().then(render)],
-    ['page_followers','page-follow-change',()=>loadSupabasePagesAndGroups().then(render)],
-    ['groups','group-change',()=>loadSupabasePagesAndGroups().then(render)],
-    ['group_members','group-member-change',()=>loadSupabasePagesAndGroups().then(render)],
-    ['group_join_requests','group-request-change',()=>loadSupabasePagesAndGroups().then(render)]
+    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)]
   ];
 
   specs.forEach(([table,name,refresh,filter])=>{
@@ -183,7 +180,12 @@ async function loadSupabaseMessages(){
         createdAt:m.created_at,
         updatedAt:m.updated_at,
         messageType:m.message_type||'text',
-        mediaUrl:m.media_url||null
+        mediaUrl:m.media_url||null,
+        fileName:m.file_name||null,
+        fileSize:m.file_size||null,
+        mimeType:m.mime_type||null,
+        file:m.media_url?{id:m.id,url:m.media_url,name:m.file_name||'Fichier',size:m.file_size||0,type:m.mime_type||m.message_type||'application/octet-stream'}:null,
+        files:m.media_url?[{id:m.id,url:m.media_url,name:m.file_name||'Fichier',size:m.file_size||0,type:m.mime_type||m.message_type||'application/octet-stream'}]:[]
       }));
     }else{
       state.messages=[];
@@ -229,16 +231,38 @@ async function persistConversation(c){
 }
 async function persistMessage(m){
   if(!supabaseReady()||!m?.id) throw new Error('Message invalide.');
-  // V18.5: message insert is handled by a SECURITY DEFINER RPC.
-  const {error}=await SB.rpc('tafa_send_message',{
-    p_id:m.id,
-    p_conversation_id:m.conversationId,
-    p_recipient_id:m.to,
-    p_text:m.text||''
-  });
+  const payload={
+    id:m.id,
+    conversation_id:m.conversationId,
+    sender_id:m.from||state.current,
+    recipient_id:m.to||null,
+    content:m.text||'',
+    text:m.text||'',
+    message_type:m.messageType||'text',
+    media_url:m.mediaUrl||null,
+    file_name:m.fileName||null,
+    file_size:m.fileSize||null,
+    mime_type:m.mimeType||null,
+    is_read:false,
+    created_at:m.createdAt||new Date().toISOString(),
+    updated_at:m.updatedAt||new Date().toISOString()
+  };
+  const {error}=await SB.from('messages').insert(payload);
   if(error) throw error;
   return m;
 }
+async function uploadMessageFile(file){
+  if(!supabaseReady()||!state.current||!file) throw new Error('Fichier invalide.');
+  const max=100*1024*1024;
+  if(file.size>max) throw new Error('Fichier trop volumineux. Maximum : 100 Mo.');
+  const safeName=String(file.name||'fichier').replace(/[^a-zA-Z0-9._-]+/g,'_');
+  const path=`${state.current}/${Date.now()}_${crypto.randomUUID()}_${safeName}`;
+  const {error}=await SB.storage.from('messages').upload(path,file,{contentType:file.type||'application/octet-stream',upsert:false});
+  if(error) throw error;
+  const {data}=SB.storage.from('messages').getPublicUrl(path);
+  return {url:data.publicUrl,path,name:file.name||safeName,size:file.size||0,type:file.type||'application/octet-stream'};
+}
+
 
 
 function supabaseReady(){
@@ -568,37 +592,6 @@ async function uploadMarketplaceImage(file){
   return data?.publicUrl||"";
 }
 
-async function loadSupabasePagesAndGroups(){
-  if(!supabaseReady() || !state.current) return;
-  try{
-    const [pagesRes, followersRes, groupsRes, membersRes, requestsRes]=await Promise.all([
-      SB.from('pages').select('*').order('created_at',{ascending:false}).limit(500),
-      SB.from('page_followers').select('page_id,user_id,created_at'),
-      SB.from('groups').select('*').order('created_at',{ascending:false}).limit(500),
-      SB.from('group_members').select('group_id,user_id,role,status,joined_at'),
-      SB.from('group_join_requests').select('id,group_id,user_id,status,created_at,updated_at')
-    ]);
-    for(const r of [pagesRes,followersRes,groupsRes,membersRes,requestsRes]) if(r.error) throw r.error;
-    const followers=followersRes.data||[], members=membersRes.data||[], requests=requestsRes.data||[];
-    state.pages=(pagesRes.data||[]).map(p=>({
-      id:p.id, ownerId:p.owner_id, name:p.name||'', category:p.category||'Page', username:p.username||'', description:p.description||'',
-      email:p.email||'', phone:p.phone||'', website:p.website||'', address:p.address||'', hours:p.hours||'', services:p.services||'',
-      followers:followers.filter(f=>f.page_id===p.id).length, verified:!!p.verified, type:'page', avatar:p.avatar_url||'', cover:p.cover_url||'', createdAt:p.created_at
-    }));
-    state.pageFollows=followers.filter(f=>f.user_id===state.current).map(f=>({pageId:f.page_id,userId:f.user_id,createdAt:f.created_at}));
-    state.groups=(groupsRes.data||[]).map(g=>({
-      id:g.id, ownerId:g.owner_id, name:g.name||'', privacy:(String(g.privacy||'Public').toLowerCase()==='private'||String(g.privacy||'Public').toLowerCase()==='privé'?'Privé':'Public'), description:g.description||'', category:g.category||'Général',
-      rules:g.rules||'', avatar:g.avatar_url||'', cover:g.cover_url||'', createdAt:g.created_at, memberCount:Number(g.member_count||0),
-      members:members.filter(m=>m.group_id===g.id&&m.status==='active').map(m=>m.user_id),
-      memberRows:members.filter(m=>m.group_id===g.id),
-      joinRequests:requests.filter(r=>r.group_id===g.id)
-    }));
-    state.groupMemberships=members.filter(m=>m.user_id===state.current);
-    state.groupJoinRequests=requests.filter(r=>r.user_id===state.current);
-    save();
-  }catch(e){ console.warn('Pages/Groupes Supabase:',e.message||e); }
-}
-
 async function hydrateSupabaseSession(){
   if(!supabaseReady()) return false;
   const {data:{session},error} = await SB.auth.getSession();
@@ -629,7 +622,6 @@ async function hydrateSupabaseSession(){
   await loadSupabaseFriends();
   await loadSupabaseStories();
   await loadSupabaseMarketplace();
-  await loadSupabasePagesAndGroups();
   save();
   return true;
 }
@@ -744,7 +736,7 @@ async function loadSupabasePosts(){
 
   const visibilityFromDb=v=>({public:"Public",friends:"Amis",private:"Moi uniquement","public":"Public","friends":"Amis","private":"Moi uniquement",Public:"Public",Amis:"Amis","Moi uniquement":"Moi uniquement"}[String(v||"")] || (v||"Public"));
   state.posts=(data||[]).map(row=>({
-    id:row.id, ownerId:row.publisher_page_id || row.owner_id || row.user_id, ownerType:row.publisher_page_id?'page':'user', groupId:row.group_id||null, authorId:row.owner_id || row.user_id,
+    id:row.id, ownerId:row.owner_id || row.user_id, ownerType:"user",
     title:row.title||"Publication", text:row.text ?? row.content ?? "",
     media:row.media_url||"", mediaType:(row.media_type||"text"),
     visibility:visibilityFromDb(row.visibility),
@@ -831,30 +823,15 @@ function postVisibilityToDb(value){
     private:"Moi uniquement"
   }[value] || "Public");
 }
-async function createSupabasePost({text,file,visibility,kind,ownerId=state.current,publisherPageId=null,groupId=null}){
+async function createSupabasePost({text,file,visibility,kind,ownerId=state.current}){
   if(!supabaseReady()) throw new Error("Supabase non disponible.");
 
   const {data:{user},error:userError}=await SB.auth.getUser();
   if(userError) throw userError;
   if(!user?.id) throw new Error("Session Supabase introuvable. Reconnectez-vous.");
 
-  // Always use the authenticated Supabase UUID. Never trust a local/account id.
   state.current=user.id;
   ownerId=user.id;
-
-  if(publisherPageId){
-    const page=findPage(publisherPageId);
-    if(!page || page.ownerId!==user.id) {
-      throw new Error("Vous ne pouvez publier qu'au nom de votre propre Page.");
-    }
-  }
-
-  if(groupId){
-    const g=findGroup(groupId);
-    if(!g || !g.members.includes(user.id)) {
-      throw new Error("Vous devez être membre du groupe pour publier.");
-    }
-  }
 
   if(visibility==="Sélection personnalisée") {
     throw new Error("La visibilité personnalisée n'est pas encore disponible.");
@@ -870,9 +847,7 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
     const fileIsImage=String(file.type||"").toLowerCase().startsWith("image/");
 
     if(kind==="photo" && !fileIsImage) throw new Error("Le mode Photo nécessite une image.");
-    if((kind==="video" || kind==="reel") && !fileIsVideo) {
-      throw new Error(`Le mode ${kind==="reel"?"Reel":"Vidéo"} nécessite une vidéo.`);
-    }
+    if((kind==="video" || kind==="reel") && !fileIsVideo) throw new Error(`Le mode ${kind==="reel"?"Reel":"Vidéo"} nécessite une vidéo.`);
 
     media_type=kind==="photo" ? "photo"
       : kind==="reel" ? "reel"
@@ -881,57 +856,38 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   }
 
   const id=crypto.randomUUID();
+  // Existing Tafaß database schema uses user_id + content.
+  // Keep the frontend model (ownerId/text) separate from Supabase column names.
+  const payload={
+    id,
+    user_id: ownerId,
+    content: String(text||""),
+    media_url: media_url || null,
+    media_type,
+    visibility: postVisibilityToDb(visibility)
+  };
 
-  /*
-   * V1.1.6.24 — publication RPC.
-   * The browser no longer inserts directly into public.posts.
-   * tafa_create_post uses auth.uid() server-side and validates
-   * personal/Page/group publication before inserting.
-   */
-  const {data,error}=await SB.rpc("tafa_create_post",{
-    p_id:id,
-    p_content:String(text||""),
-    p_media_url:media_url || null,
-    p_media_type:media_type,
-    p_visibility:groupId ? "Group" : postVisibilityToDb(visibility),
-    p_publisher_page_id:publisherPageId || null,
-    p_group_id:groupId || null
-  });
-
+  const {error}=await SB.from("posts").insert(payload);
   if(error){
     if(uploadedPath){
-      try{ await SB.storage.from("posts").remove([uploadedPath]); }
-      catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
+      try{ await SB.storage.from("posts").remove([uploadedPath]); }catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
     }
-
     const msg=[error.message,error.details,error.hint].filter(Boolean).join(" — ");
-    if(/permission denied|row-level security|rls|policy/i.test(msg)){
-      throw new Error("Publication refusée par Supabase : "+msg);
-    }
+    if(/row-level security|rls|policy/i.test(msg)) throw new Error("Publication refusée par Supabase (RLS). Exécutez PUBLICATIONS_V4_SCHEMA_FIX.sql puis réessayez.");
+    if(/column .*owner_id|column .*text|schema cache/i.test(msg)) throw new Error("Le schéma de la table posts ne correspond pas à l'installation actuelle de Tafaß. Vérifiez les colonnes user_id et content de public.posts.");
+    if(/foreign key|profiles/i.test(msg)) throw new Error("Le profil Supabase de ce compte est introuvable. "+msg);
     throw new Error(msg||"Erreur Supabase lors de la publication.");
   }
 
-  const row=Array.isArray(data) ? data[0] : data;
-  if(!row || !row.id){
-    if(uploadedPath){
-      try{ await SB.storage.from("posts").remove([uploadedPath]); }
-      catch(cleanErr){ console.warn("Nettoyage Storage:",cleanErr); }
-    }
-    throw new Error("Supabase n'a pas retourné la publication créée.");
-  }
-
   return {
-    id:row.id,
-    user_id:row.user_id,
-    owner_id:row.owner_id,
-    content:row.content||"",
-    media_url:row.media_url||"",
-    media_type:row.media_type||media_type,
-    visibility:row.visibility||postVisibilityToDb(visibility),
-    publisher_page_id:row.publisher_page_id||null,
-    group_id:row.group_id||null,
-    created_at:row.created_at,
-    updated_at:row.updated_at
+    id,
+    user_id: ownerId,
+    content: String(text||""),
+    media_url: media_url || "",
+    media_type,
+    visibility: postVisibilityToDb(visibility),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
   };
 }
 async function signOutSupabase(){
@@ -1054,12 +1010,21 @@ let state = loadState();
 let route = state.current ? "home" : "home";
 let searchFilter = "Tout";
 let activeConversation = null;
+let activeCall = null;
+let callSignalChannel = null;
+let callPeer = null;
+let callLocalStream = null;
+let callRemoteStream = null;
+let callIceQueue = [];
+let callRemoteUserId = null;
+let voiceRecorder = null;
+let voiceChunks = [];
+let voiceRecording = false;
 let registerStep = 1;
 let registerAvatar = "";
 let profileFriendsAll = false;
 let committedSearchQuery = "";
 let editingPageId = null;
-let editingGroupId = null;
 let profileTab = "posts";
 let profileViewingId = null;
 let pageTab = "posts";
@@ -1098,7 +1063,7 @@ function loadState(){
 }
 function baseState(){
   return {
-    users:[structuredClone(ADMIN)], pages:[], pageFollows:[], groups:[], groupMemberships:[], groupJoinRequests:[], posts:[], stories:[], comments:[], notifications:[],
+    users:[structuredClone(ADMIN)], pages:[], groups:[], posts:[], stories:[], comments:[], notifications:[],
     conversations:[], messages:[], friendRequests:[], friendships:[], follows:[], saved:[], searches:[],
     badgeRequests:[], reports:[], events:[], marketplace:[], settings:{dark:false,language:"Français",privacy:"public"},
     current:null, pageMode:null, drafts:[]
@@ -1107,7 +1072,6 @@ function baseState(){
 function me(){ return state.users.find(u=>u.id===state.current) || null; }
 function findUser(id){ return state.users.find(u=>u.id===id); }
 function findPage(id){ return state.pages.find(p=>p.id===id); }
-function findGroup(id){ return state.groups.find(g=>g.id===id); }
 function displayName(entity){ return entity?.name || [entity?.firstName,entity?.lastName].filter(Boolean).join(" ") || "Utilisateur"; }
 const DEFAULT_AVATAR_SVG = `assets/default-avatar.svg`;
 function avatar(entity, cls="avatar"){
@@ -1163,7 +1127,7 @@ async function notify(userId,type,text,entityId=null,commentId=null){
   return local;
 }
 function routeTo(r, options={}){
-  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","groupView","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
+  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
   if(!allowed.includes(r)) r="home";
   if(!options.replace && route!==r) routeHistory.push(route);
   route=r;
@@ -1231,8 +1195,7 @@ function renderRoute(){
   switch(route){
     case"home":return renderHome();case"friends":return renderFriends();case"search":return renderSearch();case"profile":return renderProfile(findUser(profileViewingId||state.current)||me());
     case"notifications":return renderNotifications();case"messages":return renderMessages();case"pages":return renderPages();
-    case"groups":return renderGroups();
-    case"groupView":return renderGroupView(editingGroupId);case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
+    case"groups":return renderGroups();case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
     case"events":return renderEvents();case"menu":return renderMenu();case"settings":return renderSettings();case"privacy":return renderPrivacy();
     case"security":return renderSecurity();case"accounts":return renderAccounts();case"language":return renderLanguage();case"accessibility":return renderAccessibility();
     case"devices":return renderDevices();case"payments":return renderPayments();case"badge":return renderBadge();case"ads":return renderAds();
@@ -1599,32 +1562,36 @@ function renderMessages(){
     const last=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))[0];
     return `${c.name||""} ${displayName(other)||""} ${last?.text||""}`.toLowerCase().includes(q);
   });
-  if(!activeConversation&&mine.length)activeConversation=mine[0].id;
   const conv=mine.find(c=>c.id===activeConversation);
+  const showChat=!!conv;
   const stories=state.stories.filter(s=>new Date(s.expiresAt)>Date.now()&&(s.ownerId===state.current||isFriend(s.ownerId))).slice(0,12);
   return `${pageBar}<section class="messages-premium">
     <div class="premium-page-head message-title-head"><div><h1>Messages</h1></div><div class="message-head-actions"><button class="icon-btn" data-action="messageSearch">⌕</button><button class="icon-btn message-new-plus" data-action="newConversation">＋</button></div></div>
     <div class="message-stories">${stories.map(s=>{const u=findUser(s.ownerId);return `<button class="message-story" data-action="viewStory" data-id="${s.id}"><span class="story-ring">${avatar(u,"avatar message-story-avatar")}</span><b>${esc(displayName(u).split(" ")[0])}</b><small>${isOnline(u)?"En ligne":""}</small></button>`}).join("")}</div>
-    <div class="message-shell-premium"><aside class="conversation-panel"><div class="conversation-search"><span>⌕</span><input id="conversationSearch" placeholder="Rechercher une personne"></div><div id="messagePeopleResults" class="message-people-results"></div><div class="conversation-list">${mine.length?mine.map(renderConversationPremium).join(""):`<div class="empty-state"><b>Aucune conversation</b><span>Commencez avec une personne.</span></div>`}</div></aside><section class="chat-panel-premium">${conv?renderChatPremium(conv):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Vos messages</b><span>Sélectionnez une conversation.</span></div>`}</section></div>
+    <div class="message-shell-premium ${showChat?'chat-open':'list-open'}"><aside class="conversation-panel"><div class="conversation-search"><span>⌕</span><input id="conversationSearch" placeholder="Rechercher une personne"></div><div id="messagePeopleResults" class="message-people-results"></div><div class="conversation-list">${mine.length?mine.map(renderConversationPremium).join(""):`<div class="empty-state"><b>Aucune conversation</b><span>Commencez avec une personne.</span></div>`}</div></aside><section class="chat-panel-premium">${conv?renderChatPremium(conv):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Vos messages</b><span>Sélectionnez une conversation.</span></div>`}</section></div>
   </section>`;
 }
 function renderConversationPremium(c){
   const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const last=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))[0];
-  return `<button class="conversation-row ${activeConversation===c.id?"active":""}" data-action="selectConversation" data-id="${c.id}">${avatar(other||{name:c.name},"avatar")}<span class="conversation-copy"><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${esc(last?.text||last?.file?.name||"Nouvelle conversation")}</small></span>${other&&isOnline(other)?`<i class="online-dot"></i>`:""}<i>›</i></button>`;
+  return `<button class="conversation-row ${activeConversation===c.id?"active":""}" data-action="selectConversation" data-id="${c.id}">${avatar(other||{name:c.name},"avatar")}<span class="conversation-copy"><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${esc(last?.text||last?.fileName||last?.file?.name||((last?.messageType==='audio')?'🎙 Message vocal':'Fichier')||"Nouvelle conversation")}</small></span>${other&&isOnline(other)?`<i class="online-dot"></i>`:""}<i>›</i></button>`;
 }
 function messageAttachmentHtml(file){
   if(!file)return "";
-  const data=file.data||"";
-  const safe=esc(data);
-  if(file.type?.startsWith("image/")&&data)return `<div class="chat-media-card"><img src="${safe}" alt="${esc(file.name||"Image")}"><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
-  if(file.type?.startsWith("video/")&&data)return `<div class="chat-media-card"><video src="${safe}" controls></video><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
-  return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(file.name||"Fichier")}</b><small>${esc(file.type||"fichier")} · ${file.size?Math.ceil(file.size/1024)+" Ko":""}</small></div><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩</button></div>`;
+  const src=file.data||file.url||file.mediaUrl||"";
+  const safe=esc(src);
+  const type=String(file.type||'').toLowerCase();
+  if(!src) return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(file.name||"Fichier")}</b><small>${esc(type||"fichier")} · ${file.size?Math.ceil(file.size/1024)+" Ko":""}</small></div></div>`;
+  if(type.startsWith('image/'))return `<div class="chat-media-card"><img src="${safe}" alt="${esc(file.name||"Image")}"><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
+  if(type.startsWith('video/'))return `<div class="chat-media-card"><video src="${safe}" controls playsinline></video><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩ Enregistrer</button></div>`;
+  if(type.startsWith('audio/')||file.messageType==='audio')return `<div class="chat-audio-card"><span>🎙</span><audio src="${safe}" controls preload="metadata"></audio><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩</button></div>`;
+  return `<div class="file-bubble chat-file-card"><span class="file-icon">📎</span><div><b>${esc(file.name||"Fichier")}</b><small>${esc(type||"fichier")} · ${file.size?Math.ceil(file.size/1024)+" Ko":""}</small></div><button data-action="downloadMessageFile" data-id="${esc(file.id||"")}">⇩</button></div>`;
 }
+
 function renderChatPremium(c){
   const other=c.type==="group"?null:findUser(c.members.find(x=>x!==state.current)); const msgs=state.messages.filter(m=>m.conversationId===c.id).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
-  return `<header class="chat-top-premium">${avatar(other||{name:c.name},"avatar") }<div><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${c.type==="group"?`${c.members.length} membres`:isOnline(other)?"En ligne":"Hors ligne"}</small></div><div class="chat-tools"><button class="icon-btn" data-action="voiceCall" data-id="${other?.id||c.id}">☎</button><button class="icon-btn" data-action="voiceInvite" data-id="${c.id}">🎙</button></div></header>
+  return `<header class="chat-top-premium"><button class="icon-btn chat-back-btn" data-action="backToMessages" title="Retour">‹</button>${avatar(other||{name:c.name},"avatar") }<div><b>${esc(c.type==="group"?c.name:displayName(other))}</b><small>${c.type==="group"?`${c.members.length} membres`:isOnline(other)?"En ligne":"Hors ligne"}</small></div><div class="chat-tools"><button class="icon-btn" data-action="voiceCall" data-id="${other?.id||c.id}" title="Appel vocal">☎</button><button class="icon-btn" data-action="voiceVideoCall" data-id="${other?.id||c.id}" title="Appel vidéo">▣</button></div></header>
   <div class="chat-body-premium">${msgs.length?msgs.map(m=>`<div class="bubble-premium ${m.from===state.current?"mine":""}">${m.files?.map(messageAttachmentHtml).join("")||messageAttachmentHtml(m.file)}${m.text?`<div>${esc(m.text)}</div>`:""}<small>${timeAgo(m.createdAt)}${m.from===state.current?` · <span class="message-status ${m.read?"read":"sent"}">${m.read?"✓✓":"✓"}</span>`:""}</small></div>`).join(""):`<div class="chat-empty"><div class="chat-empty-icon">◈</div><b>Aucun message</b><span>Écrivez votre premier message.</span></div>`}</div>
-  <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile">＋</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx"><div class="chat-input-shell"><input name="text" placeholder="Écrire un message..."><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn">➤</button></form>`;
+  <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile" title="Photo, vidéo ou fichier">＋</button><button type="button" class="icon-btn voice-record-btn ${voiceRecording?'recording':''}" data-action="recordVoice" title="${voiceRecording?'Arrêter l’enregistrement':'Message vocal'}">${voiceRecording?'■':'🎙'}</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx,.csv,.json,.html,.css,.js"><div class="chat-input-shell"><input name="text" placeholder="Message"><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn" title="Envoyer">➤</button></form>`;
 }
 function renderPages(){
   const mine=state.pages.filter(p=>p.ownerId===state.current);
@@ -1656,7 +1623,7 @@ function renderPageView(id){
   const followers=state.follows.filter(f=>f.to===p.id).length || p.followers || 0;
   const following=state.follows.filter(f=>f.from===p.id).length || 0;
   const own=p.ownerId===state.current;
-  const followExists=(state.pageFollows||[]).some(f=>f.pageId===p.id&&f.userId===state.current);
+  const followExists=state.follows.some(f=>f.from===state.current&&f.to===p.id);
   let list=pageTab==="photos"?photos:pageTab==="videos"?videos:pageTab==="reels"?reels:posts;
   let content;
   if(pageTab==="about"){
@@ -1693,55 +1660,10 @@ function renderPageView(id){
 }
 function renderGroups(){
   const gs=state.groups||[];
-  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS RÉELLES</span><h1>Groupes</h1><p>Communautés synchronisées avec Supabase en temps réel.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
-  <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input id="groupSearch" placeholder="Rechercher un groupe"></div><button class="hub-filter-v90" data-action="groupFilter" data-filter="all">Tous</button><button class="hub-filter-v90" data-action="groupFilter" data-filter="private">Privés</button><button class="hub-filter-v90" data-action="groupFilter" data-filter="public">Publics</button></div>
-  <div class="hub-grid-v90">${gs.map(g=>{const member=Array.isArray(g.members)&&g.members.includes(state.current), own=g.ownerId===state.current, pending=(g.joinRequests||[]).some(r=>r.user_id===state.current&&r.status==='pending'); const isPrivate=String(g.privacy||'Public')==='Privé'; return `<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(isPrivate?'Privé':'Public')}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||'Communauté Tafaß')}</p><div class="hub-stats-v90"><span>${g.memberCount||g.members.length} membres</span><span>${esc(g.category||'Général')}</span></div><button type="button" class="btn secondary wide" data-action="viewGroup" data-id="${g.id}">Voir le groupe</button>${own?`<button type="button" class="btn secondary wide" disabled>Administrateur</button>`:member?`<button type="button" class="btn danger wide" data-action="joinGroup" data-id="${g.id}">Quitter</button>`:isPrivate?(pending?`<button type="button" class="btn secondary wide" disabled>Demande en attente</button>`:`<button type="button" class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`):`<button type="button" class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></article>`}).join('')||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Rejoignez des communautés ou créez votre propre espace privé.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
+  <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input placeholder="Rechercher un groupe"></div><button class="hub-filter-v90">Tous</button><button class="hub-filter-v90">Privés</button><button class="hub-filter-v90">Publics</button></div>
+  <div class="hub-grid-v90">${gs.map(g=>`<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||"Public")}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${g.members?.length||0} membres</span><span>${g.privacy==="Privé"?"Groupe privé":"Communauté"}</span></div><button class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button></div></article>`).join("")||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
 }
-function renderGroupView(id){
-  const g=findGroup(id);
-  if(!g) return `${routeBackBar("Groupes","groups")}<div class="empty-state"><b>Groupe introuvable</b><span>Ce groupe n'est plus disponible.</span></div>`;
-  const members=Array.isArray(g.memberRows)?g.memberRows.filter(m=>m.status==='active'):[];
-  const member=Array.isArray(g.members)&&g.members.includes(state.current);
-  const own=g.ownerId===state.current;
-  const pending=(g.joinRequests||[]).some(r=>r.user_id===state.current&&r.status==='pending');
-  const posts=state.posts.filter(p=>p.groupId===g.id&&canSeePost(p));
-  const requests=(g.joinRequests||[]).filter(r=>r.status==='pending' && own);
-  const privacy=String(g.privacy||'Public').toLowerCase()==='privé'?'Privé':'Public';
-  const canPublish=own||member;
-  return `${routeBackBar('Groupes','groups')}
-  <section class="page-view-v90 group-full-view-v26">
-    <div class="page-cover-v90 group-cover-v26"><div class="cover-shade"></div></div>
-    <div class="page-identity-v90 group-identity-v26">
-      <div class="page-avatar-v90">◉</div>
-      <div class="page-title-v90">
-        <span class="type-pill">GROUPE · ${esc(privacy)}</span>
-        <h1>${esc(g.name)}</h1>
-        <p>${esc(g.description||'Communauté Tafaß')}</p>
-        <strong>${g.memberCount||members.length||g.members.length} membres · ${esc(g.category||'Général')}</strong>
-      </div>
-      <div class="page-actions-v90">
-        ${own
-          ? `<button type="button" class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button>`
-          : member
-            ? `<button type="button" class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button><button type="button" class="btn danger" data-action="joinGroup" data-id="${g.id}">Quitter</button>`
-            : privacy==='Privé'
-              ? (pending?`<button type="button" class="btn secondary" disabled>Demande en attente</button>`:`<button type="button" class="btn primary" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`)
-              : `<button type="button" class="btn primary" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}
-      </div>
-    </div>
-    <nav class="profile-tabs-premium group-tabs-v26">
-      <button class="active" type="button">Publications</button>
-      <button type="button" data-action="groupAbout" data-id="${g.id}">À propos</button>
-      <button type="button" data-action="groupMembers" data-id="${g.id}">Membres</button>
-    </nav>
-    <div class="saved-stack-v90">
-      ${canPublish?`<div class="card group-composer-entry-v26"><div><b>Partager dans ${esc(g.name)}</b><small>Publiez un texte, une photo ou une vidéo pour les membres du groupe.</small></div><button class="btn primary" type="button" data-action="groupComposer" data-id="${g.id}">Créer une publication</button></div>`:''}
-      ${own&&requests.length?`<div class="card"><h3>Demandes d'adhésion</h3>${requests.map(r=>`<div class="list-item"><span>${esc(displayName(findUser(r.user_id)||{name:'Utilisateur'}))}</span><div><button class="btn primary" data-action="approveGroupJoin" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectGroupJoin" data-id="${r.id}">Refuser</button></div></div>`).join('')}</div>`:''}
-      ${posts.length?posts.map(renderPost).join(''):`<div class="empty-state"><b>Aucune publication</b><span>${canPublish?'Commencez la conversation avec une première publication.':'Les publications du groupe apparaîtront ici.'}</span></div>`}
-    </div>
-  </section>`;
-}
-
 function renderMedia(type){
   const pageBar=pageContextBar();
   const normalizedType=type==="video"?"video":"reel";
@@ -2009,10 +1931,10 @@ function renderAds(){
     ]}
   ]);
 }
-function openComposer(kind="post", groupId=null){
+function openComposer(kind="post"){
   const page=findPage(state.pageMode);
   const publisher=page||me();
-  const label=groupId?`Publier dans ${displayName(findGroup(groupId)||{})}`:(page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`);
+  const label=page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
   const accept=(kind==="reel"||kind==="video")?"video/*":kind==="photo"?"image/*":"image/*,video/*";
   modal(label,`<form id="composerForm" class="premium-form composer-modal-v88">
     <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${page?"PAGE":"COMPTE"}</small></div></div>
@@ -2080,14 +2002,14 @@ function openComposer(kind="post", groupId=null){
       const max=isImage?15*1024*1024:100*1024*1024;
       if(file.size>max){ toast(`Fichier trop volumineux. Maximum ${isImage?"15 Mo":"100 Mo"}.`); return; }
     }
-
+    if(page){ toast("Les publications de Page seront activées dans l'étape Pages."); return; }
     if(submit){submit.disabled=true;submit.textContent="Publication…";}
     toast("Publication en cours…");
     try{
       const publishKind=(kind==="video"||kind==="reel")?kind:(kind==="post"&&file&&String(file.type||"").toLowerCase().startsWith("video/")?"video":kind);
-      const created=await createSupabasePost({text,file,visibility,kind:publishKind,publisherPageId:groupId?null:(page?.id||null),groupId});
+      const created=await createSupabasePost({text,file,visibility,kind:publishKind});
       const local={
-        id:created.id, ownerId:created.publisher_page_id||created.user_id, ownerType:created.publisher_page_id?'page':'user', groupId:created.group_id||null, authorId:created.user_id, title:"Publication",
+        id:created.id, ownerId:created.user_id, ownerType:"user", title:"Publication",
         text:created.content, media:created.media_url, mediaType:created.media_type,
         visibility:({public:"Public",friends:"Amis",private:"Moi uniquement"}[created.visibility]||visibility),
         allowedUsers:[], tags:[], createdAt:created.created_at, editedAt:created.updated_at,
@@ -2150,7 +2072,7 @@ function bindPageEvents(){
     convSearch.value=window.messageConversationQuery||"";
     convSearch.oninput=()=>{window.messageConversationQuery=convSearch.value;render();};
   }
-  document.querySelectorAll("[data-chat-form]").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const id=form.dataset.chatForm,text=form.querySelector('[name="text"]').value.trim(),input=form.querySelector('input[type=file]'),files=[...(input?.files||[])];if(!text&&!files.length)return;const payload=[];for(const f of files){const data=await fileToData(f);payload.push({name:f.name,type:f.type,size:f.size,data});}sendMessage(id,text,payload);form.reset();render();});
+  document.querySelectorAll("[data-chat-form]").forEach(form=>form.onsubmit=async e=>{e.preventDefault();const id=form.dataset.chatForm,text=form.querySelector('[name="text"]').value.trim(),input=form.querySelector('input[type=file]'),files=[...(input?.files||[])];if(!text&&!files.length)return;await sendMessage(id,text,files);form.reset();render();});
   const theme=$("themeSelect");if(theme)theme.onchange=()=>{state.settings.dark=theme.value==="dark";save();applyTheme();};
   const lang=$("languageSelect");if(lang)lang.onchange=()=>{state.settings.language=lang.value;save();toast("Langue enregistrée");};
   const ps=$("pageSearchInput");const pf=$("pageSearchForm");if(ps){ps.oninput=()=>{window.globalSearchQuery=ps.value;const top=$("globalSearch");if(top)top.value=ps.value;};}if(pf){pf.onsubmit=e=>{e.preventDefault();const q=ps?.value.trim()||"";if(!q)return;committedSearchQuery=q;if(openSearchDeepLink(q))return;state.searches=[q,...state.searches.filter(x=>x!==q)].slice(0,15);save();render();searchSupabaseGlobal(q).then(()=>{if(committedSearchQuery===q)render();});};}
@@ -2223,7 +2145,7 @@ async function handleAction(e,el){
   if(a==="followPage")return togglePageFollow(id);
   if(a==="messageUser"||a==="messagePage")return startConversation(id);
   if(a==="attachFile"){const form=el.closest("form");form?.querySelector("input[type=file]")?.click();return;}
-  if(a==="downloadMessageFile"){const all=state.messages.flatMap(m=>m.files||[m.file]).filter(Boolean);const f=all.find(x=>x.id===id);if(f?.data){const a=document.createElement("a");a.href=f.data;a.download=f.name||"Tafaß-fichier";a.click();}else toast("Fichier introuvable");return;}
+  if(a==="downloadMessageFile"){const all=state.messages.flatMap(m=>m.files||[m.file]).filter(Boolean);const f=all.find(x=>x.id===id);if(f?.data||f?.url){const a=document.createElement("a");a.href=f.data||f.url;a.download=f.name||"Tafaß-fichier";a.target="_blank";document.body.appendChild(a);a.click();a.remove();}else toast("Fichier introuvable");return;}
   if(a==="viewProfile")return routeToProfile(id);
   if(a==="settingChoice"){
     const key=el.dataset.settingKey, label=el.dataset.settingLabel, opts=JSON.parse(el.dataset.settingOptions||"[]");
@@ -2276,12 +2198,16 @@ async function handleAction(e,el){
   if(a==="newConversation")return newConversation();
   if(a==="startPersonConversation")return startConversation(id);
   if(a==="selectConversation"){activeConversation=id;render();markConversationRead(id).then(()=>{if(activeConversation===id)render();});return;}
-  if(a==="attachFile"){document.querySelector(`input[type=file][id="chatFile_${activeConversation}"]`)?.click();return;}
-  if(a==="voiceCall")return voiceCall(id);
-  if(a==="voiceInvite")return toast("Message vocal simulé : connectez un backend/WebRTC pour la version réelle.");
+  if(a==="backToMessages"){activeConversation=null;stopVoiceCall(false);render();return;}
+  if(a==="attachFile"){const target=el.closest("form")?.querySelector('input[type=file]')||document.querySelector(`input[type=file][id="chatFile_${activeConversation}"]`);target?.click();return;}
+  if(a==="recordVoice")return toggleVoiceRecording();
+  if(a==="voiceCall")return voiceCall(id,false);
+  if(a==="voiceVideoCall")return voiceCall(id,true);
+  if(a==="acceptCall")return acceptVoiceCall();
+  if(a==="declineCall"){stopVoiceCall(true);return;}
   if(a==="createPage")return createPage();
   if(a==="viewPage"){editingPageId=id;return routeTo("pageView");}
-  if(a==="pageMore"){const p=findPage(id);if(!p)return;const own=p.ownerId===state.current;return modal("Options de la Page",`<div class="premium-options">${own?`<button class="menu-card-premium" data-action="editPage" data-id="${id}"><span>✎</span><strong>Modifier la Page</strong></button><button class="menu-card-premium" data-action="switchPage" data-id="${id}"><span>▤</span><strong>Passer en mode Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`:`<button class="menu-card-premium" data-action="followPage" data-id="${id}"><span>＋</span><strong>${(state.pageFollows||[]).some(f=>f.pageId===id&&f.userId===state.current)?"Ne plus suivre":"Suivre"}</strong></button><button class="menu-card-premium" data-action="messagePage" data-id="${id}"><span>◈</span><strong>Message</strong></button><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler la Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`}</div>`);}
+  if(a==="pageMore"){const p=findPage(id);if(!p)return;const own=p.ownerId===state.current;return modal("Options de la Page",`<div class="premium-options">${own?`<button class="menu-card-premium" data-action="editPage" data-id="${id}"><span>✎</span><strong>Modifier la Page</strong></button><button class="menu-card-premium" data-action="switchPage" data-id="${id}"><span>▤</span><strong>Passer en mode Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`:`<button class="menu-card-premium" data-action="followPage" data-id="${id}"><span>＋</span><strong>${state.follows.some(f=>f.from===state.current&&f.to===id)?"Ne plus suivre":"Suivre"}</strong></button><button class="menu-card-premium" data-action="messagePage" data-id="${id}"><span>◈</span><strong>Message</strong></button><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler la Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`}</div>`);}
   if(a==="pageModeHome"){pageTab="posts";return render();}
   if(a==="pageModeMessages"){return routeTo("messages");}
   if(a==="pageModeVideos"){pageTab="reels";return render();}
@@ -2293,24 +2219,6 @@ async function handleAction(e,el){
   if(a==="editPage")return editPage(id);
   if(a==="createGroup")return createGroup();
   if(a==="joinGroup")return joinGroup(id);
-  if(a==="viewGroup"){
-    const g=findGroup(id);
-    if(!g) return toast("Groupe introuvable.");
-    editingGroupId=id;
-    return routeTo("groupView");
-  }
-  if(a==="groupAbout"){
-    const g=findGroup(id); if(!g)return toast("Groupe introuvable.");
-    return modal(`À propos · ${g.name}`,`<div class="group-about-v26"><h3>${esc(g.name)}</h3><p>${esc(g.description||"Aucune description.")}</p><p><b>Confidentialité :</b> ${esc(g.privacy||"Public")}</p><p><b>Catégorie :</b> ${esc(g.category||"Général")}</p>${g.rules?`<p><b>Règles :</b><br>${esc(g.rules)}</p>`:""}</div>`);
-  }
-  if(a==="groupMembers"){
-    const g=findGroup(id); if(!g)return toast("Groupe introuvable.");
-    const rows=(g.memberRows||[]).filter(m=>m.status==='active');
-    return modal(`Membres · ${g.name}`,`<div class="group-members-v26">${rows.map(m=>{const u=findUser(m.user_id)||{name:"Utilisateur"};return `<div class="list-item">${avatar(u,"avatar sm")}<div class="list-main"><b>${esc(displayName(u))}</b><small>${esc(m.role||"member")}</small></div></div>`}).join("")||`<div class="empty-state"><b>Aucun membre</b></div>`}</div>`);
-  }
-  if(a==="groupComposer")return groupComposer(id);
-  if(a==="approveGroupJoin")return approveGroupJoin(id);
-  if(a==="rejectGroupJoin")return rejectGroupJoin(id);
   if(a==="editProfile")return editProfile();
   if(a==="editCover")return editCover();
   if(a==="refreshProfile"){
@@ -2343,7 +2251,7 @@ async function handleAction(e,el){
   if(a==="rejectBadge")return badgeDecision(id,false);
   if(a==="adminDeleteUser"){if(confirm("Supprimer ce compte local ?")){state.users=state.users.filter(u=>u.id!==id);save();render();}return;}
   if(a==="adminUsers")return toast("Gestion utilisateurs déjà visible ci-dessous.");
-  if(a==="helpTopic"){ const t=el.dataset.topic; const help={"Compte et connexion":"Gérez la connexion, l'inscription, le changement de mot de passe et la déconnexion.","Publications et Stories":"Créez, modifiez, supprimez, enregistrez et partagez vos contenus. La visibilité peut être Public, Amis ou Moi uniquement.","Amis et abonnés":"Envoyez des invitations, acceptez ou refusez des demandes et gérez vos abonnements.","Messages et appels":"Recherchez une personne, envoyez du texte, des photos, vidéos et fichiers. Les appels sont simulés dans le prototype.","Pages et groupes":"Créez une Page ou un groupe, publiez au nom de votre Page et gérez les membres.","Badge bleu":"Demandez le badge bleu en 5 étapes pour 25 000 Ar/mois. Le paiement reste simulé localement.","Confidentialité":"Réglez la visibilité de votre profil, bio, photos, situation amoureuse, pseudo, publications et Stories.","Sécurité":"Modifiez votre mot de passe, surveillez les sessions et activez la vérification en deux étapes dans le prototype.","Marketplace":"Publiez des annonces, recherchez des produits et contactez un vendeur.","Recherche":"Recherchez des personnes, comptes, Pages, groupes, publications, photos, vidéos et Reels."}; return modal(t,`<div class="help-topic-card-v91"><div class="help-topic-icon-v91">?</div><p>${esc(help[t]||"Cette rubrique contient les informations d'utilisation de Tafaß.")}</p><button class="btn primary wide" data-action="closeModal">Compris</button></div>`); }
+  if(a==="helpTopic"){ const t=el.dataset.topic; const help={"Compte et connexion":"Gérez la connexion, l'inscription, le changement de mot de passe et la déconnexion.","Publications et Stories":"Créez, modifiez, supprimez, enregistrez et partagez vos contenus. La visibilité peut être Public, Amis ou Moi uniquement.","Amis et abonnés":"Envoyez des invitations, acceptez ou refusez des demandes et gérez vos abonnements.","Messages et appels":"Recherchez une personne, ouvrez sa conversation, envoyez du texte, des photos, vidéos, audio et fichiers, utilisez les messages vocaux et passez des appels audio/vidéo en temps réel.","Pages et groupes":"Créez une Page ou un groupe, publiez au nom de votre Page et gérez les membres.","Badge bleu":"Demandez le badge bleu en 5 étapes pour 25 000 Ar/mois. Le paiement reste simulé localement.","Confidentialité":"Réglez la visibilité de votre profil, bio, photos, situation amoureuse, pseudo, publications et Stories.","Sécurité":"Modifiez votre mot de passe, surveillez les sessions et activez la vérification en deux étapes dans le prototype.","Marketplace":"Publiez des annonces, recherchez des produits et contactez un vendeur.","Recherche":"Recherchez des personnes, comptes, Pages, groupes, publications, photos, vidéos et Reels."}; return modal(t,`<div class="help-topic-card-v91"><div class="help-topic-icon-v91">?</div><p>${esc(help[t]||"Cette rubrique contient les informations d'utilisation de Tafaß.")}</p><button class="btn primary wide" data-action="closeModal">Compris</button></div>`); }
   if(a==="applySettings"){state.settings=state.settings||{};document.querySelectorAll("[data-setting-key]").forEach(x=>{state.settings[x.dataset.settingKey]=x.value});save();toast("Paramètres appliqués");return;}
   if(a==="switchAccount")return openAccountSwitcher();
   if(a==="addAccount"){
@@ -2463,7 +2371,7 @@ function toggleCommentReplies(id){
 function editComment(id){
   const c=state.comments.find(x=>x.id===id);
   if(!c||c.userId!==state.current)return;
-  modal("Modifier le commentaire",`<form id="editCommentForm"><textarea id="editCommentText" required>${esc(c.text)}</textarea><button type="submit" class="btn primary wide">Enregistrer</button></form>`);
+  modal("Modifier le commentaire",`<form id="editCommentForm"><textarea id="editCommentText" required>${esc(c.text)}</textarea><button class="btn primary wide">Enregistrer</button></form>`);
   $("editCommentForm").onsubmit=async e=>{
     e.preventDefault();
     const text=$("editCommentText").value.trim(); if(!text)return;
@@ -2696,9 +2604,9 @@ async function startMarketplaceConversation(listingId){
 }
 async function startConversation(id){
   if(!state.current || !id || id===state.current) return;
-  let c=state.conversations.find(c=>c.type==="private"&&Array.isArray(c.members)&&c.members.includes(state.current)&&c.members.includes(id));
+  let c=state.conversations.find(c=>c.type==='private'&&Array.isArray(c.members)&&c.members.includes(state.current)&&c.members.includes(id));
   if(!c){
-    c={id:crypto.randomUUID(),type:"private",members:[state.current,id],createdAt:new Date().toISOString()};
+    c={id:crypto.randomUUID(),type:'private',members:[state.current,id],createdAt:new Date().toISOString()};
     if(supabaseReady()){
       try{ await persistConversation(c); }
       catch(e){ console.error('startConversation:',e); toast('Conversation impossible : '+(e.message||'erreur Supabase')); return; }
@@ -2706,11 +2614,11 @@ async function startConversation(id){
     state.conversations.push(c); save();
   }
   activeConversation=c.id;
-  if(ownerId!==state.current) await notify(ownerId,'marketplace_contact',`${displayName(me())} souhaite vous contacter à propos de « ${item.title||'votre annonce'} ».`);
-  routeTo("messages");
+  routeTo('messages');
   if(supabaseReady()) await loadSupabaseMessages();
   render();
 }
+
 function newConversation(){
   const people=state.users.filter(u=>u.id!==state.current).map(u=>`<option value="${u.id}">${esc(displayName(u))} (@${esc(u.username)})</option>`).join("");
   modal("Nouveau message",`<form id="newConvForm"><label>Destinataire<select id="newConvUser" required>${people}</select></label><label>Premier message<textarea id="newConvText"></textarea></label><div class="actions"><button type="button" class="btn secondary" data-action="createGroup">＋ Groupe</button><button class="btn primary">Créer la conversation</button></div></form>`);
@@ -2723,28 +2631,134 @@ function newConversation(){
 async function sendMessage(convId,text,fileOrFiles){
   const c=state.conversations.find(x=>x.id===convId);
   if(!c || !state.current) return;
-  const to=c?.members?.find(x=>x!==state.current)||null;
-  let files=[];
-  if(Array.isArray(fileOrFiles)) files=fileOrFiles.filter(Boolean).map(f=>Object.assign({id:uid("mf")},f));
-  else if(fileOrFiles) files=[Object.assign({id:uid("mf")},fileOrFiles)];
-  const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text,files,file:files[0]||null,read:false,createdAt:new Date().toISOString()};
-  // Persist the conversation first so the messages FK can never race it.
-  if(supabaseReady()){
-    try{
-      await persistConversation(c);
-      await persistMessage(m);
-      await loadSupabaseMessages();
-    }catch(error){
-      console.error('sendMessage:',error);
-      toast('Message impossible : '+(error.message||'erreur Supabase'));
-      return;
+  const to=c.type==='group'?null:(c.members?.find(x=>x!==state.current)||null);
+  const rawFiles=Array.isArray(fileOrFiles)?fileOrFiles.filter(Boolean):fileOrFiles?[fileOrFiles]:[];
+  try{
+    await persistConversation(c);
+    if(text){
+      const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text,files:[],file:null,read:false,createdAt:new Date().toISOString(),messageType:'text'};
+      if(supabaseReady()) await persistMessage(m); else state.messages.push(m);
     }
+    for(const raw of rawFiles){
+      const uploaded=await uploadMessageFile(raw);
+      const m={id:crypto.randomUUID(),conversationId:convId,from:state.current,to,text:'',files:[{id:'',url:uploaded.url,name:uploaded.name,size:uploaded.size,type:uploaded.type}],file:{url:uploaded.url,name:uploaded.name,size:uploaded.size,type:uploaded.type},read:false,createdAt:new Date().toISOString(),messageType:uploaded.type.startsWith('audio/')?'audio':'file',mediaUrl:uploaded.url,fileName:uploaded.name,fileSize:uploaded.size,mimeType:uploaded.type};
+      if(supabaseReady()) await persistMessage(m); else state.messages.push(m);
+    }
+    if(supabaseReady()) await loadSupabaseMessages();
+    if(to) await notify(to,'message',`${displayName(me())} vous a envoyé un message.`);
+    save(); render();
+  }catch(error){
+    console.error('sendMessage:',error);
+    toast('Message impossible : '+(error.message||'erreur Supabase'));
   }
-  if(!supabaseReady()){ state.messages.push(m); save(); }
-  if(to) await notify(to,"message",`${displayName(me())} vous a envoyé un message.`);
-  render();
 }
-function voiceCall(id){modal("Appel vocal",`<div class="empty"><div class="empty-icon">☎</div><b>Appel simulé</b><p>L'interface est prête. Pour un appel réel, branchez WebRTC + signalisation backend.</p><button class="btn primary" data-action="closeModal">Terminer</button></div>`);}
+
+async function toggleVoiceRecording(){
+  const c=state.conversations.find(x=>x.id===activeConversation);
+  if(!c||!state.current) return;
+  if(voiceRecording){
+    voiceRecorder?.stop();
+    return;
+  }
+  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder) return toast('Le message vocal n’est pas pris en charge par ce navigateur.');
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const preferred=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(x=>MediaRecorder.isTypeSupported(x));
+    voiceChunks=[];
+    voiceRecorder=new MediaRecorder(stream,preferred?{mimeType:preferred}:undefined);
+    voiceRecording=true; render();
+    voiceRecorder.ondataavailable=e=>{if(e.data?.size)voiceChunks.push(e.data)};
+    voiceRecorder.onstop=async()=>{
+      voiceRecording=false;
+      stream.getTracks().forEach(t=>t.stop());
+      const blob=new Blob(voiceChunks,{type:voiceRecorder.mimeType||'audio/webm'});
+      voiceRecorder=null; voiceChunks=[]; render();
+      if(blob.size<100) return;
+      const file=new File([blob],`message-vocal-${Date.now()}.webm`,{type:blob.type||'audio/webm'});
+      await sendMessage(c.id,'',[file]);
+    };
+    voiceRecorder.start();
+  }catch(e){voiceRecording=false;toast('Microphone inaccessible : '+(e.message||'autorisation requise'));render();}
+}
+
+function callSignalName(uid){return `tafa-call-user-${uid}`;}
+function startCallSignalChannel(){
+  if(!supabaseReady()||!state.current||callSignalChannel) return;
+  callSignalChannel=SB.channel(callSignalName(state.current));
+  callSignalChannel.on('broadcast',{event:'call-signal'},async({payload})=>{
+    if(!payload||payload.target!==state.current)return;
+    try{await handleCallSignal(payload);}catch(e){console.warn('Call signal:',e);}
+  }).subscribe();
+}
+async function sendCallSignal(target,data){
+  if(!supabaseReady()||!target)return;
+  const ch=SB.channel(callSignalName(target));
+  await new Promise(resolve=>ch.subscribe(status=>{if(status==='SUBSCRIBED')resolve();}));
+  await ch.send({type:'broadcast',event:'call-signal',payload:{...data,target,from:state.current}});
+  setTimeout(()=>{try{SB.removeChannel(ch)}catch(e){}},2000);
+}
+function makePeer(remoteId,video=false){
+  if(callPeer)callPeer.close();
+  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]});
+  callPeer=pc; callRemoteUserId=remoteId;
+  if(callLocalStream)callLocalStream.getTracks().forEach(t=>pc.addTrack(t,callLocalStream));
+  pc.onicecandidate=e=>{if(e.candidate)sendCallSignal(remoteId,{kind:'ice',conversationId:activeCall?.conversationId,candidate:e.candidate.toJSON()});};
+  pc.ontrack=e=>{callRemoteStream=e.streams[0];const audio=document.getElementById('tafaRemoteCallAudio');if(audio){audio.srcObject=callRemoteStream;audio.play().catch(()=>{});}const videoEl=document.getElementById('tafaRemoteCallVideo');if(videoEl&&video) {videoEl.srcObject=callRemoteStream;videoEl.play().catch(()=>{});}};
+  pc.onconnectionstatechange=()=>{if(['failed','disconnected','closed'].includes(pc.connectionState)) stopVoiceCall(true);};
+  return pc;
+}
+async function voiceCall(remoteId,video=false){
+  if(!remoteId||!state.current)return;
+  if(!navigator.mediaDevices?.getUserMedia||!window.RTCPeerConnection)return toast('Les appels ne sont pas pris en charge par ce navigateur.');
+  const conv=state.conversations.find(c=>c.id===activeConversation);
+  if(!conv)return toast('Ouvrez une conversation avant d’appeler.');
+  try{
+    callLocalStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!video});
+    activeCall={conversationId:conv.id,remoteId,video,caller:true};
+    const pc=makePeer(remoteId,video);
+    const offer=await pc.createOffer(); await pc.setLocalDescription(offer);
+    await sendCallSignal(remoteId,{kind:'offer',conversationId:conv.id,video,offer:pc.localDescription});
+    showCallModal(false,video,remoteId);
+  }catch(e){stopVoiceCall(false);toast('Appel impossible : '+(e.message||'autorisation requise'));}
+}
+async function handleCallSignal(p){
+  if(p.kind==='offer'){
+    if(activeCall)return;
+    activeCall={conversationId:p.conversationId,remoteId:p.from,video:!!p.video,caller:false,pendingOffer:p.offer};
+    showCallModal(true,!!p.video,p.from);
+    return;
+  }
+  if(!activeCall||activeCall.remoteId!==p.from)return;
+  if(p.kind==='answer'&&callPeer){await callPeer.setRemoteDescription(new RTCSessionDescription(p.answer));for(const c of callIceQueue.splice(0))await callPeer.addIceCandidate(c);return;}
+  if(p.kind==='ice'){if(callPeer?.remoteDescription)await callPeer.addIceCandidate(p.candidate);else callIceQueue.push(p.candidate);return;}
+  if(p.kind==='hangup'){stopVoiceCall(false);return;}
+}
+function showCallModal(incoming,video,remoteId){
+  const u=findUser(remoteId)||{name:'Utilisateur'};
+  const title=incoming?'Appel entrant':'Appel en cours';
+  const media=`<audio id="tafaRemoteCallAudio" autoplay playsinline></audio>${video?`<video id="tafaRemoteCallVideo" class="call-remote-video" autoplay playsinline></video>`:''}`;
+  const body=incoming?`<div class="call-card-v1">${media}<div class="call-avatar">${avatar(u,'avatar')}</div><b>${esc(displayName(u))}</b><span>${video?'Appel vidéo':'Appel vocal'}</span><div class="call-actions"><button class="btn secondary" data-action="declineCall">Refuser</button><button class="btn primary" data-action="acceptCall">Accepter</button></div></div>`:`<div class="call-card-v1">${media}<div class="call-avatar">${avatar(u,'avatar')}</div><b>${esc(displayName(u))}</b><span>${video?'Appel vidéo':'Appel vocal'}…</span><div class="call-actions"><button class="btn danger" data-action="declineCall">Raccrocher</button></div></div>`;
+  modal(title,body);
+}
+async function acceptVoiceCall(){
+  if(!activeCall?.pendingOffer)return;
+  try{
+    callLocalStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!activeCall.video});
+    const pc=makePeer(activeCall.remoteId,activeCall.video);
+    await pc.setRemoteDescription(new RTCSessionDescription(activeCall.pendingOffer));
+    for(const c of callIceQueue.splice(0))await pc.addIceCandidate(c);
+    const answer=await pc.createAnswer();await pc.setLocalDescription(answer);
+    await sendCallSignal(activeCall.remoteId,{kind:'answer',conversationId:activeCall.conversationId,video:activeCall.video,answer:pc.localDescription});
+    delete activeCall.pendingOffer; closeModal(); showCallModal(false,activeCall.video,activeCall.remoteId);
+  }catch(e){stopVoiceCall(false);toast('Impossible d’accepter l’appel : '+(e.message||''));}
+}
+function stopVoiceCall(send=true){
+  if(send&&activeCall?.remoteId)sendCallSignal(activeCall.remoteId,{kind:'hangup',conversationId:activeCall.conversationId}).catch(()=>{});
+  try{callPeer?.close()}catch(e){} callPeer=null;
+  callLocalStream?.getTracks().forEach(t=>t.stop()); callLocalStream=null; callRemoteStream=null; callIceQueue=[]; callRemoteUserId=null; activeCall=null;
+  closeModal();
+}
+
 async function createMarketplace(){
   if(!supabaseReady()) return toast("Supabase non disponible.");
   modal("Nouvelle annonce",`<form id="marketForm" class="premium-form">
@@ -2791,18 +2805,12 @@ async function createMarketplace(){
     }
   };
 }
-async function createPage(){
-  modal("Créer une Page",`<form id="pageForm"><label>Nom de la Page<input id="pName" required></label><label>Catégorie<select id="pCat">${PAGE_CATS.map(x=>`<option>${x}</option>`).join("")}</select></label><label>Username<input id="pUser" required placeholder="ma_page"></label><label>Description<textarea id="pDesc"></textarea></label><label>E-mail<input id="pEmail" type="email"></label><label>Téléphone<input id="pPhone"></label><label>Site web<input id="pWeb"></label><label>Adresse<input id="pAddress"></label><label>Horaires<input id="pHours"></label><label>Services / produits<textarea id="pServices"></textarea></label><button type="submit" class="btn primary wide">Créer la Page</button></form>`);
-  $("pageForm").onsubmit=async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('button[type="submit"]');try{if(btn)btn.disabled=true;const payload={owner_id:state.current,name:$('pName').value.trim(),category:$('pCat').value,username:$('pUser').value.trim().toLowerCase(),description:$('pDesc').value.trim(),email:$('pEmail').value.trim()||null,phone:$('pPhone').value.trim()||null,website:$('pWeb').value.trim()||null,address:$('pAddress').value.trim()||null,hours:$('pHours').value.trim()||null,services:$('pServices').value.trim()||null};const {error}=await SB.from('pages').insert(payload);if(error)throw error;await loadSupabasePagesAndGroups();closeModal();routeTo('pages');toast('Page créée ✓');}catch(err){toast('Création impossible : '+(err.message||err));}finally{if(btn)btn.disabled=false;}};
+function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de la Page<input id="pName" required></label><label>Catégorie<select id="pCat">${PAGE_CATS.map(x=>`<option>${x}</option>`).join("")}</select></label><label>Username<input id="pUser" required placeholder="ma_page"></label><label>Description<textarea id="pDesc"></textarea></label><label>E-mail<input id="pEmail" type="email"></label><label>Téléphone<input id="pPhone"></label><label>Site web<input id="pWeb"></label><label>Adresse<input id="pAddress"></label><label>Horaires<input id="pHours"></label><label>Services / produits<textarea id="pServices"></textarea></label><button class="btn primary wide">Créer la Page</button></form>`);
+  $("pageForm").onsubmit=e=>{e.preventDefault();const p={id:uid("page"),ownerId:state.current,name:$("pName").value.trim(),category:$("pCat").value,username:$("pUser").value.trim(),description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:"",cover:"",createdAt:new Date().toISOString()};state.pages.push(p);save();closeModal();render();toast("Page créée");};
 }
-async function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Username<input id="epUser" value="${esc(p.username||'')}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><label>E-mail<input id="epEmail" value="${esc(p.email||'')}"></label><label>Téléphone<input id="epPhone" value="${esc(p.phone||'')}"></label><label>Site web<input id="epWeb" value="${esc(p.website||'')}"></label><label>Adresse<input id="epAddress" value="${esc(p.address||'')}"></label><label>Horaires<input id="epHours" value="${esc(p.hours||'')}"></label><label>Services / produits<textarea id="epServices">${esc(p.services||'')}</textarea></label><button type="submit" class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=async e=>{e.preventDefault();try{const {error}=await SB.from('pages').update({name:$('epName').value.trim(),username:$('epUser').value.trim().toLowerCase(),description:$('epDesc').value.trim(),category:$('epCat').value,email:$('epEmail').value.trim()||null,phone:$('epPhone').value.trim()||null,website:$('epWeb').value.trim()||null,address:$('epAddress').value.trim()||null,hours:$('epHours').value.trim()||null,services:$('epServices').value.trim()||null}).eq('id',id).eq('owner_id',state.current);if(error)throw error;await loadSupabasePagesAndGroups();closeModal();render();toast('Page mise à jour ✓');}catch(err){toast('Modification impossible : '+(err.message||err));}};}
-async function togglePageFollow(id){const p=findPage(id);if(!p||!state.current)return;try{const {data,error}=await SB.rpc('tafa_toggle_page_follow',{p_page_id:id});if(error)throw error;await loadSupabasePagesAndGroups();render();toast(data?.following?'Page suivie ✓':'Page non suivie');}catch(err){toast('Action impossible : '+(err.message||err));}}
-async function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Catégorie<input id="gCategory" value="Général"></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><label>Règles<textarea id="gRules"></textarea></label><button type="submit" class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('button[type="submit"]');try{if(btn)btn.disabled=true;const {data,error}=await SB.from('groups').insert({owner_id:state.current,name:$('gName').value.trim(),category:$('gCategory').value.trim()||'Général',privacy:$('gPrivacy').value,description:$('gDesc').value.trim(),rules:$('gRules').value.trim()}).select('*').single();if(error)throw error;await SB.from('group_members').insert({group_id:data.id,user_id:state.current,role:'owner',status:'active'});await loadSupabasePagesAndGroups();closeModal();routeTo('groups');toast('Groupe créé ✓');}catch(err){toast('Création impossible : '+(err.message||err));}finally{if(btn)btn.disabled=false;}};}
-async function joinGroup(id){const g=findGroup(id);if(!g||!state.current)return;try{const {data,error}=await SB.rpc('tafa_join_group',{p_group_id:id});if(error)throw error;const stateName=data?.state;if(stateName==='joined')toast('Vous avez rejoint le groupe ✓');else if(stateName==='left')toast('Vous avez quitté le groupe');else if(stateName==='requested')toast('Demande envoyée ✓');await loadSupabasePagesAndGroups();render();}catch(err){toast('Action impossible : '+(err.message||err));}}
-async function approveGroupJoin(id){try{const {error}=await SB.rpc('tafa_approve_group_join',{p_request_id:id});if(error)throw error;await loadSupabasePagesAndGroups();render();toast('Demande acceptée ✓');}catch(err){toast('Action impossible : '+(err.message||err));}}
-async function rejectGroupJoin(id){try{const {error}=await SB.rpc('tafa_reject_group_join',{p_request_id:id});if(error)throw error;await loadSupabasePagesAndGroups();render();toast('Demande refusée');}catch(err){toast('Action impossible : '+(err.message||err));}}
-function groupComposer(id){const g=findGroup(id);if(!g||!g.members.includes(state.current))return toast('Vous devez être membre du groupe.');openComposer('post',id);}
-
+function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=e=>{e.preventDefault();p.name=$("epName").value;p.description=$("epDesc").value;p.category=$("epCat").value;save();closeModal();render();};}
+function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=e=>{e.preventDefault();state.groups.push({id:uid("g"),name:$("gName").value,privacy:$("gPrivacy").value,description:$("gDesc").value,members:[state.current],ownerId:state.current});save();closeModal();render();};}
+function joinGroup(id){const g=state.groups.find(x=>x.id===id);if(g&&!g.members.includes(state.current)){g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe");}}
 async function changePassword(){
   modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Votre mot de passe est géré directement par Supabase Auth. Il n'est jamais enregistré dans le navigateur.</div><label>Mot de passe actuel<input id="oldPass" type="password" autocomplete="current-password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" autocomplete="new-password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
   $("passwordChangeForm").onsubmit=async e=>{
@@ -2961,7 +2969,7 @@ function editProfile(){
   };
 }
 function editCover(){
-  modal("Photo de couverture",`<form id="coverForm"><label>Choisir une image<input id="coverFile" type="file" accept="image/*" required></label><button type="submit" class="btn primary wide">Enregistrer</button></form>`);
+  modal("Photo de couverture",`<form id="coverForm"><label>Choisir une image<input id="coverFile" type="file" accept="image/*" required></label><button class="btn primary wide">Enregistrer</button></form>`);
   $("coverForm").onsubmit=async e=>{
     e.preventDefault();
     try{
@@ -2973,7 +2981,7 @@ function editCover(){
   };
 }
 function openFindFriends(){modal("Trouver des amis",`<input id="friendSearch" placeholder="Rechercher un nom ou @username"><div id="friendResults" style="margin-top:10px">${renderSuggestions(10)}</div>`);$("friendSearch").oninput=()=>{$("friendResults").innerHTML=state.users.filter(u=>u.id!==state.current&&(displayName(u)+" "+u.username).toLowerCase().includes($("friendSearch").value.toLowerCase())).map(friendSuggestion).join("")};}
-function createEvent(){modal("Créer un événement",`<form id="eventForm"><label>Nom<input id="eventName" required></label><label>Date<input id="eventDate" type="datetime-local" required></label><label>Description<textarea id="eventDesc"></textarea></label><button type="submit" class="btn primary wide">Créer</button></form>`);$("eventForm").onsubmit=e=>{e.preventDefault();state.events.push({id:uid("event"),ownerId:state.current,name:$("eventName").value,date:$("eventDate").value,description:$("eventDesc").value});save();closeModal();render();};}
+function createEvent(){modal("Créer un événement",`<form id="eventForm"><label>Nom<input id="eventName" required></label><label>Date<input id="eventDate" type="datetime-local" required></label><label>Description<textarea id="eventDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("eventForm").onsubmit=e=>{e.preventDefault();state.events.push({id:uid("event"),ownerId:state.current,name:$("eventName").value,date:$("eventDate").value,description:$("eventDesc").value});save();closeModal();render();};}
 function renderBadge(){
   const u=me();
   const mine=(state.badgeRequests||[]).filter(r=>r.userId===state.current).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
