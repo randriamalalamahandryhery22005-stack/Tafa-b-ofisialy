@@ -3973,3 +3973,5 @@ body.dark .top-actions .menu-action{
   .bubble-premium{max-width:84%;font-size:13px}
   .chat-compose-premium{padding:7px 6px!important}
 }
+
+.admin-row .btn{margin-left:6px}.admin-row{gap:10px;flex-wrap:wrap}.admin-grow{min-width:0}.admin-grow small{word-break:break-word}
