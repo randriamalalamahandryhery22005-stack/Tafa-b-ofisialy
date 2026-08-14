@@ -690,6 +690,62 @@ async function removeFriend(id){
 
 
 
+
+function normalizeRegistrationPayload(form){
+  const f=form||{};
+  return {
+    first_name:String(f.first_name||f.prenom||"").trim(),
+    last_name:String(f.last_name||f.nom||"").trim(),
+    username:String(f.username||f.nom_utilisateur||"").trim().toLowerCase(),
+    birth_date:String(f.birth_date||f.date_naissance||"").trim(),
+    gender:String(f.gender||f.genre||"").trim(),
+    country:String(f.country||f.pays||"").trim(),
+    phone:String(f.phone||f.numero||"").trim(),
+    email:String(f.email||"").trim().toLowerCase(),
+    password:String(f.password||"")
+  };
+}
+
+function isOfficialRegistration(p){
+  return p.email===String(ADMIN.email).trim().toLowerCase() &&
+    p.username===String(TAFA_OFFICIAL_ADMIN_PROFILE.username).toLowerCase();
+}
+
+async function createRegisteredProfile(authUser, form){
+  if(!authUser?.id || !supabaseReady()) return {profile:null,error:new Error("Session Supabase absente")};
+  const p=normalizeRegistrationPayload(form);
+  const official=isOfficialRegistration(p) && String(authUser.email||"").toLowerCase()===String(ADMIN.email).toLowerCase();
+
+  const payload={
+    id:authUser.id,
+    email:String(authUser.email||p.email).toLowerCase(),
+    username:p.username||null,
+    first_name:p.first_name||null,
+    last_name:p.last_name||null,
+    birth_date:p.birth_date||null,
+    gender:p.gender||null,
+    country:p.country||null,
+    phone:p.phone||null,
+    verified:official
+  };
+
+  const variants=[
+    payload,
+    {...payload,birth_date:undefined},
+    {id:payload.id,email:payload.email,username:payload.username,first_name:payload.first_name,last_name:payload.last_name},
+    {id:payload.id,email:payload.email,username:payload.username}
+  ];
+
+  let lastError=null;
+  for(const candidate of variants){
+    Object.keys(candidate).forEach(k=>candidate[k]===undefined&&delete candidate[k]);
+    const {data,error}=await SB.from("profiles").insert(candidate).select("*").maybeSingle();
+    if(!error && data) return {profile:data,error:null};
+    lastError=error;
+  }
+  return {profile:null,error:lastError};
+}
+
 async function ensureOfficialProfile(authUser){
   if(!supabaseReady() || !authUser?.id) return null;
   const patch=officialAdminProfilePatch(authUser);
