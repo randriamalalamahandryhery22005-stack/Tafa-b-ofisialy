@@ -1457,7 +1457,7 @@ async function notify(userId,type,text,entityId=null,commentId=null){
   return local;
 }
 function routeTo(r, options={}){
-  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
+  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","admin-users","admin-reports","admin-badges","admin-posts","pageView"];
   if(!allowed.includes(r)) r="home";
   if(!options.replace && route!==r) routeHistory.push(route);
   route=r;
@@ -1530,7 +1530,7 @@ function renderRoute(){
     case"security":return renderSecurity();case"accounts":return renderAccounts();case"language":return renderLanguage();case"accessibility":return renderAccessibility();
     case"devices":return renderDevices();case"payments":return renderPayments();case"badge":return renderBadge();case"ads":return renderAds();
     case"activity":return renderActivity();case"help":return renderHelp();case"terms":return renderTerms();case"about":return renderAbout();case"admin":return renderAdmin();
-    case"pageView":return renderPageView(editingPageId);default:return renderHome();
+    case"admin-users":return renderAdminUsers();case"admin-reports":return renderAdminReports();case"admin-badges":return renderAdminBadges();case"admin-posts":return renderAdminPosts();case"pageView":return renderPageView(editingPageId);default:return renderHome();
   }
 }
 function renderHome(){
@@ -2155,7 +2155,7 @@ function renderMenu(){
     <div class="menu-grid-premium-v86">${items.map(([id,icon,label])=>{
       if(id==="switchAccount") return "";
       if(id==="logout") return `<button class="menu-card-v86 menu-danger" data-action="logout" type="button"><span class="menu-icon-v86">${icon}</span><span class="menu-copy-v86"><strong>${label}</strong></span><span class="menu-arrow-v86">›</span></button>`;
-      const actionAttr=id==="badge"?`data-action="openBadge"`:``;
+      const actionAttr=id==="badge"?`data-action="openBadge"`:id==="admin"?`data-action="admin"`:``;
       return `<button class="menu-card-v86" data-route="${id}" ${actionAttr} type="button"><span class="menu-icon-v86">${icon}</span><span class="menu-copy-v86"><strong>${label}</strong></span><span class="menu-arrow-v86">›</span></button>`;
     }).join("")}</div>
   </section>`;
@@ -2385,6 +2385,26 @@ function renderAbout(){
   <div class="about-grid-v90"><article><span>◎</span><b>Tafaß Ofisialy</b><small>Compte officiel</small></article><article><span>✉</span><b>tafabofisialy@gmail.com</b><small>E-mail officiel</small></article><article><span>⌖</span><b>Antananarivo</b><small>Madagascar</small></article><article><span>▤</span><b>Pages & communautés</b><small>Créer, publier, suivre</small></article></div>
   <div class="about-description-v90"><h2>Notre mission</h2><p>Tafaß permet de communiquer, publier des photos et vidéos, partager des Stories et Reels, discuter en privé, créer des groupes et développer des Pages professionnelles.</p><div class="about-features-v90"><span>Actualités</span><span>Messages</span><span>Amis</span><span>Pages</span><span>Vidéos</span><span>Marketplace</span><span>Groupes</span><span>Notifications</span></div></div></section>`;
 }
+function renderAdminUsers(){
+  if(!isAdminAccount())return routeTo("home");
+  const users=state.users||[];
+  return `${routeBackBar("Administration","admin")}<section class="admin-dashboard"><div class="admin-head"><div><span class="eyebrow">TAFAß · ADMIN</span><h1>Utilisateurs</h1><p>Gestion des comptes chargés.</p></div></div><div class="admin-panel">${users.map(u=>`<div class="admin-row"><div class="admin-avatar">${esc(String(u.name||u.username||"?").slice(0,1).toUpperCase())}</div><div class="admin-grow"><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")} · ${esc(u.email||"")}</small></div>${isAdminUser(u)?'<span class="admin-pill blue">✓ ADMIN</span>':`<button class="btn ghost danger" data-action="adminDeleteUser" data-id="${esc(u.id)}">Supprimer</button>`}</div>`).join("")||'<div class="admin-empty">Aucun utilisateur chargé.</div>'}</div></section>`;
+}
+function renderAdminReports(){
+  if(!isAdminAccount())return routeTo("home");
+  const reports=state.reports||[];
+  return `${routeBackBar("Administration","admin")}<section class="admin-dashboard"><div class="admin-head"><div><span class="eyebrow">TAFAß · MODÉRATION</span><h1>Signalements</h1><p>Contenus signalés par la communauté.</p></div></div><div class="admin-panel">${reports.length?reports.map(r=>`<div class="admin-row"><div class="admin-grow"><b>${esc(r.type||"Signalement")}</b><small>Cible : ${esc(r.targetId||"")} · ${timeAgo(r.createdAt)}</small></div><button class="btn ghost" data-action="closeModal" onclick="">Voir</button></div>`).join(""):'<div class="admin-empty">Aucun signalement.</div>'}</div></section>`;
+}
+function renderAdminBadges(){
+  if(!isAdminAccount())return routeTo("home");
+  const req=state.badgeRequests||[];
+  return `${routeBackBar("Administration","admin")}<section class="admin-dashboard"><div class="admin-head"><div><span class="eyebrow">TAFAß · VÉRIFICATION</span><h1>Badges bleus</h1><p>Demandes de vérification.</p></div></div><div class="admin-panel">${req.length?req.map(r=>`<div class="admin-row"><div class="admin-grow"><b>${esc(r.userName||r.username||r.userId||"Utilisateur")}</b><small>${esc(r.status||"pending")} · ${timeAgo(r.createdAt)}</small></div><button class="btn primary" data-action="adminApproveBadge" data-id="${esc(r.id)}">Approuver</button><button class="btn ghost danger" data-action="adminRejectBadge" data-id="${esc(r.id)}">Refuser</button></div>`).join(""):'<div class="admin-empty">Aucune demande.</div>'}</div></section>`;
+}
+function renderAdminPosts(){
+  if(!isAdminAccount())return routeTo("home");
+  const posts=state.posts||[];
+  return `${routeBackBar("Administration","admin")}<section class="admin-dashboard"><div class="admin-head"><div><span class="eyebrow">TAFAß · MODÉRATION</span><h1>Publications</h1><p>Modération des contenus publiés.</p></div></div><div class="admin-panel">${posts.length?posts.slice(0,100).map(p=>`<div class="admin-row"><div class="admin-grow"><b>${esc((p.text||"Publication").slice(0,90))}</b><small>${esc(displayName(findUser(p.ownerId)||{}))} · ${timeAgo(p.createdAt)}</small></div><button class="btn ghost danger" data-action="adminDeletePost" data-id="${esc(p.id)}">Supprimer</button></div>`).join(""):'<div class="admin-empty">Aucune publication.</div>'}</div></section>`;
+}
 function renderAdmin(){
   if(!isAdminAccount()) return `${routeBackBar("Menu","menu")}<section class="card"><h2>Accès refusé</h2><p>Cette section est réservée à l'administrateur officiel.</p></section>`;
 
@@ -2493,6 +2513,7 @@ function bindPageEvents(){
 }
 async function handleAction(e,el){
   const a=el.dataset.action,id=el.dataset.id;
+  if(a==="admin"){ if(!isAdminAccount()) return toast("Accès administrateur refusé"); return routeTo("admin"); }
   if(a==="closeModal")return closeModal();
   if(a==="copyLink"){ closeModal(); return copyAppLink(id); }
   if(a==="nativeShareLink"){ const url=appLink(id); if(navigator.share){navigator.share({title:"Tafaß",url}).catch(()=>{});} else copyAppLink(id,"Lien copié"); return; }
@@ -2660,7 +2681,13 @@ async function handleAction(e,el){
   if(a==="approveBadge")return badgeDecision(id,true);
   if(a==="rejectBadge")return badgeDecision(id,false);
   if(a==="adminDeleteUser"){if(confirm("Supprimer ce compte local ?")){state.users=state.users.filter(u=>u.id!==id);save();render();}return;}
-  if(a==="adminUsers")return toast("Gestion utilisateurs déjà visible ci-dessous.");
+  if(a==="adminUsers")return routeTo("admin-users");
+  if(a==="adminReports")return routeTo("admin-reports");
+  if(a==="adminBadges")return routeTo("admin-badges");
+  if(a==="adminPosts")return routeTo("admin-posts");
+  if(a==="adminDeletePost"){ const p=state.posts.find(x=>x.id===id); if(!p)return; if(supabaseReady()){const {error}=await SB.from("posts").delete().eq("id",id); if(error)return toast("Suppression impossible : "+error.message);} state.posts=state.posts.filter(x=>x.id!==id); save(); render(); return toast("Publication supprimée ✓"); }
+  if(a==="adminApproveBadge")return badgeDecision(id,true);
+  if(a==="adminRejectBadge")return badgeDecision(id,false);
   if(a==="helpTopic"){ const t=el.dataset.topic; const help={"Compte et connexion":"Gérez la connexion, l'inscription, le changement de mot de passe et la déconnexion.","Publications et Stories":"Créez, modifiez, supprimez, enregistrez et partagez vos contenus. La visibilité peut être Public, Amis ou Moi uniquement.","Amis et abonnés":"Envoyez des invitations, acceptez ou refusez des demandes et gérez vos abonnements.","Messages et appels":"Recherchez une personne, ouvrez sa conversation, envoyez du texte, des photos, vidéos, audio et fichiers, utilisez les messages vocaux et passez des appels audio/vidéo en temps réel.","Pages et groupes":"Créez une Page ou un groupe, publiez au nom de votre Page et gérez les membres.","Badge bleu":"Demandez le badge bleu en 5 étapes pour 25 000 Ar/mois. Le paiement reste simulé localement.","Confidentialité":"Réglez la visibilité de votre profil, bio, photos, situation amoureuse, pseudo, publications et Stories.","Sécurité":"Modifiez votre mot de passe, surveillez les sessions et activez la vérification en deux étapes dans le prototype.","Marketplace":"Publiez des annonces, recherchez des produits et contactez un vendeur.","Recherche":"Recherchez des personnes, comptes, Pages, groupes, publications, photos, vidéos et Reels."}; return modal(t,`<div class="help-topic-card-v91"><div class="help-topic-icon-v91">?</div><p>${esc(help[t]||"Cette rubrique contient les informations d'utilisation de Tafaß.")}</p><button class="btn primary wide" data-action="closeModal">Compris</button></div>`); }
   if(a==="applySettings"){state.settings=state.settings||{};document.querySelectorAll("[data-setting-key]").forEach(x=>{state.settings[x.dataset.settingKey]=x.value});save();toast("Paramètres appliqués");return;}
   if(a==="switchAccount")return openAccountSwitcher();
