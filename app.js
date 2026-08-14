@@ -992,6 +992,10 @@ let registerAvatar = "";
 let profileFriendsAll = false;
 let committedSearchQuery = "";
 let editingPageId = null;
+let editingGroupId = null;
+let groupTab = "discover";
+let pageHubTab = "discover";
+let groupSearch = "";
 let profileTab = "posts";
 let profileViewingId = null;
 let pageTab = "posts";
@@ -1039,6 +1043,7 @@ function baseState(){
 function me(){ return state.users.find(u=>u.id===state.current) || null; }
 function findUser(id){ return state.users.find(u=>u.id===id); }
 function findPage(id){ return state.pages.find(p=>p.id===id); }
+function findGroup(id){ return (state.groups||[]).find(g=>g.id===id); }
 function displayName(entity){ return entity?.name || [entity?.firstName,entity?.lastName].filter(Boolean).join(" ") || "Utilisateur"; }
 const DEFAULT_AVATAR_SVG = `assets/default-avatar.svg`;
 function avatar(entity, cls="avatar"){
@@ -1094,7 +1099,7 @@ async function notify(userId,type,text,entityId=null,commentId=null){
   return local;
 }
 function routeTo(r, options={}){
-  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
+  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView","groupView"];
   if(!allowed.includes(r)) r="home";
   if(!options.replace && route!==r) routeHistory.push(route);
   route=r;
@@ -1132,6 +1137,12 @@ function isOnline(u){ return !!u?.online; }
 function canSeePost(p){
   if(p.ownerId===state.current)return true;
   if(p.ownerType==="page")return true;
+  if(p.ownerType==="group"){
+    const g=findGroup(p.ownerId);
+    if(!g)return false;
+    if(g.privacy!=="Public" && !(g.members||[]).includes(state.current))return false;
+    return true;
+  }
   if((p.visibility||"Public")==="Public")return true;
   if(p.visibility==="Amis")return isFriend(p.ownerId);
   if(p.visibility==="Sélection personnalisée")return (p.allowedUsers||[]).includes(state.current);
@@ -1152,6 +1163,10 @@ function render(){
   const mb=$("msgBadge"); const mu=unreadMessages(); if(mb){mb.textContent=mu>99?"99+":mu;mb.classList.toggle("hidden",mu===0)}
   const fb=$("friendsBadge"); const fi=pendingFriendInvites(); if(fb){fb.textContent=fi>99?"99+":fi;fb.classList.toggle("hidden",fi===0)}
   $("mainContent").innerHTML=renderRoute();
+  const pageSearchInput=$("pageSearchInput");
+  if(pageSearchInput){pageSearchInput.oninput=()=>{window.pageSearch=pageSearchInput.value;clearTimeout(window.__pageSearchTimer);window.__pageSearchTimer=setTimeout(()=>{if(route==="pages")render();},180);};}
+  const groupSearchInput=$("groupSearchInput");
+  if(groupSearchInput){groupSearchInput.oninput=()=>{groupSearch=groupSearchInput.value;render();};}
   $("rightSuggestions").innerHTML=renderSuggestions(3);
   localizeApp();
   setupNavigation();
@@ -1162,7 +1177,7 @@ function renderRoute(){
   switch(route){
     case"home":return renderHome();case"friends":return renderFriends();case"search":return renderSearch();case"profile":return renderProfile(findUser(profileViewingId||state.current)||me());
     case"notifications":return renderNotifications();case"messages":return renderMessages();case"pages":return renderPages();
-    case"groups":return renderGroups();case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
+    case"groups":return renderGroups();case"groupView":return renderGroupView(editingGroupId);case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
     case"events":return renderEvents();case"menu":return renderMenu();case"settings":return renderSettings();case"privacy":return renderPrivacy();
     case"security":return renderSecurity();case"accounts":return renderAccounts();case"language":return renderLanguage();case"accessibility":return renderAccessibility();
     case"devices":return renderDevices();case"payments":return renderPayments();case"badge":return renderBadge();case"ads":return renderAds();
@@ -1209,14 +1224,14 @@ function renderExpandablePostText(p){
   return `<div class="post-text ${expandable?"is-expandable":""} ${expanded?"is-expanded":""}"><span>${esc(shown)}</span>${expandable?` <button type="button" class="post-text-toggle" data-action="togglePostText" data-id="${esc(p.id)}">${expanded?"Voir moins":"Voir plus"}</button>`:""}</div>`;
 }
 function renderPost(p){
-  const owner=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId); if(!owner)return"";
+  const owner=p.ownerType==="page"?findPage(p.ownerId):p.ownerType==="group"?findGroup(p.ownerId):findUser(p.ownerId); if(!owner)return"";
   if(!canSeePost(p))return"";
   const reactions=p.reactions||{}, count=Object.values(reactions).reduce((a,b)=>a+b,0), mine=p.myReaction?.[state.current]||"";
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
   const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
   const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"></div>`):"";
-  const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
+  const ownerAction=p.ownerType==="page"?"viewPage":p.ownerType==="group"?"viewGroup":"viewProfile";
   const deleteButton = p.ownerId===state.current
     ? `<button class="icon-btn post-delete-btn" type="button" title="Supprimer cette publication" aria-label="Supprimer cette publication" data-action="delete-post" data-post-id="${esc(p.id)}">🗑️</button>`
     : "";
@@ -1557,23 +1572,26 @@ function renderChatPremium(c){
   <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile">＋</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx"><div class="chat-input-shell"><input name="text" placeholder="Écrire un message..."><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn">➤</button></form>`;
 }
 function renderPages(){
-  const mine=state.pages.filter(p=>p.ownerId===state.current);
-  return `${routeBackBar("Menu","menu")}<section class="pages-premium">
-    <div class="premium-page-head">
-      <div><span class="eyebrow">ESPACE CRÉATEUR</span><h1>Pages</h1><p>Vos Pages professionnelles, artistes, marques et communautés.</p></div>
-      <button class="btn primary" data-action="createPage">＋ Créer une Page</button>
-    </div>
-    <div class="page-grid-premium">${mine.map(p=>`<article class="page-card-premium">
-      <div class="page-card-cover" style="${p.cover?`background-image:url('${esc(p.cover)}')`:""}"><span class="page-label">PAGE</span></div>
-      <div class="page-card-body">
-        <div class="page-card-avatar">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc((p.name||"P")[0])}</div>
-        <h2>${esc(p.name)} ${verified(p)}</h2>
-        <span class="page-category">${esc(p.category||"Page")}</span>
-        <p>${esc(p.description||"Votre Page Tafaß.")}</p>
-        <div class="page-mini-stats"><span><b>${p.followers||0}</b> followers</span><span><b>${state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page").length}</b> publications</span></div>
-        <div class="page-card-actions"><button class="btn primary" data-action="viewPage" data-id="${p.id}">Ouvrir</button><button class="btn secondary" data-action="switchPage" data-id="${p.id}">Passer à ma Page</button></div>
-      </div>
-    </article>`).join("")||`<div class="empty-state"><b>Vous n'avez pas encore de Page</b><span>Créez une Page pour une marque, une entreprise, un artiste ou un projet.</span></div>`}</div>
+  const all=state.pages||[];
+  const mine=all.filter(p=>p.ownerId===state.current);
+  const q=String(window.pageSearch||"").toLowerCase().trim();
+  const visible=q?all.filter(p=>`${p.name||""} ${p.username||""} ${p.category||""} ${p.description||""}`.toLowerCase().includes(q)):all;
+  const discover=visible.filter(p=>p.ownerId!==state.current);
+  const followCount=p=>state.follows.filter(f=>f.to===p.id).length||p.followers||0;
+  const card=p=>`<article class="page-card-premium page-card-v21">
+    <div class="page-card-cover" style="${p.cover?`background-image:url('${esc(p.cover)}')`:''}"><span class="page-label">PAGE</span></div>
+    <div class="page-card-body">
+      <div class="page-card-avatar">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc((p.name||"P")[0])}</div>
+      <h2>${esc(p.name)} ${verified(p)}</h2><span class="page-category">${esc(p.category||"Page")}</span>
+      <p>${esc(p.description||"Votre Page Tafaß.")}</p>
+      <div class="page-mini-stats"><span><b>${followCount(p)}</b> abonnés</span><span><b>${state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page").length}</b> publications</span></div>
+      <div class="page-card-actions"><button class="btn primary" data-action="viewPage" data-id="${p.id}">Ouvrir</button>${p.ownerId===state.current?`<button class="btn secondary" data-action="switchPage" data-id="${p.id}">Mode Page</button>`:`<button class="btn secondary" data-action="followPage" data-id="${p.id}">${state.follows.some(f=>f.from===state.current&&f.to===p.id)?"✓ Suivi":"＋ Suivre"}</button>`}</div>
+    </div></article>`;
+  return `${routeBackBar("Menu","menu")}<section class="pages-premium pages-hub-v21">
+    <div class="premium-page-head"><div><span class="eyebrow">TAFAß · PROFESSIONNEL</span><h1>Pages</h1><p>Créez et développez une présence professionnelle pour une marque, une entreprise, un artiste ou un projet.</p></div><button class="btn primary" data-action="createPage">＋ Créer une Page</button></div>
+    <div class="page-hub-search-v21"><span>⌕</span><input id="pageSearchInput" value="${esc(window.pageSearch||"")}" placeholder="Rechercher une Page, une marque ou un artiste"><button class="clear-search-premium" data-action="clearPageSearch">Effacer</button></div>
+    <div class="page-hub-tabs-v21"><button class="${pageHubTab==="mine"?"active":""}" data-action="pageHubTab" data-tab="mine">Mes Pages <b>${mine.length}</b></button><button class="${pageHubTab!=="mine"?"active":""}" data-action="pageHubTab" data-tab="discover">Découvrir <b>${discover.length}</b></button></div>
+    <div class="page-grid-premium">${(pageHubTab==="mine"?mine:discover).map(card).join("")||`<div class="empty-state"><b>${pageHubTab==="mine"?"Vous n'avez pas encore de Page":"Aucune Page trouvée"}</b><span>${pageHubTab==="mine"?"Créez votre première Page pour commencer.":"Essayez une autre recherche."}</span></div>`}</div>
     ${state.pageMode?`<div class="page-mode-banner"><b>Mode Page actif</b><span>${esc(findPage(state.pageMode)?.name||"")}</span><button class="btn secondary" data-action="leavePageMode">Revenir à mon compte</button></div>`:""}
   </section>`;
 }
@@ -1623,9 +1641,22 @@ function renderPageView(id){
 }
 function renderGroups(){
   const gs=state.groups||[];
-  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Rejoignez des communautés ou créez votre propre espace privé.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
-  <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input placeholder="Rechercher un groupe"></div><button class="hub-filter-v90">Tous</button><button class="hub-filter-v90">Privés</button><button class="hub-filter-v90">Publics</button></div>
-  <div class="hub-grid-v90">${gs.map(g=>`<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||"Public")}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${g.members?.length||0} membres</span><span>${g.privacy==="Privé"?"Groupe privé":"Communauté"}</span></div><button class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button></div></article>`).join("")||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
+  const q=String(groupSearch||"").toLowerCase().trim();
+  let list=q?gs.filter(g=>`${g.name||""} ${g.description||""}`.toLowerCase().includes(q)):gs;
+  if(groupTab==="mine") list=list.filter(g=>(g.members||[]).includes(state.current));
+  if(groupTab==="public") list=list.filter(g=>g.privacy==="Public");
+  if(groupTab==="private") list=list.filter(g=>g.privacy==="Privé");
+  const card=g=>{const joined=(g.members||[]).includes(state.current);return `<article class="hub-card-v90 group-card-v21"><div class="group-cover-v21" style="${g.cover?`background-image:url('${esc(g.cover)}')`:''}"><span class="group-cover-icon">◉</span><span class="type-pill">${esc(g.privacy||"Public")}</span></div><div class="hub-card-body"><h2>${esc(g.name)}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${g.members?.length||0} membres</span><span>${g.ownerId===state.current?"Votre groupe":g.privacy==="Privé"?"Groupe privé":"Communauté publique"}</span></div><div class="group-card-actions-v21"><button class="btn primary" data-action="viewGroup" data-id="${g.id}">Ouvrir</button>${g.ownerId===state.current?`<button class="btn secondary" data-action="editGroup" data-id="${g.id}">Modifier</button>`:joined?`<button class="btn secondary" data-action="leaveGroup" data-id="${g.id}">Quitter</button>`:`<button class="btn secondary" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></div></article>`};
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90 groups-hub-v21"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Créez, découvrez et animez des communautés autour de vos centres d'intérêt.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
+  <div class="hub-toolbar-v90 groups-toolbar-v21"><div class="hub-search-v90"><span>⌕</span><input id="groupSearchInput" value="${esc(groupSearch)}" placeholder="Rechercher un groupe"></div><button class="hub-filter-v90 ${groupTab==="discover"?"active":""}" data-action="groupTab" data-tab="discover">Tous</button><button class="hub-filter-v90 ${groupTab==="mine"?"active":""}" data-action="groupTab" data-tab="mine">Mes groupes</button><button class="hub-filter-v90 ${groupTab==="public"?"active":""}" data-action="groupTab" data-tab="public">Publics</button><button class="hub-filter-v90 ${groupTab==="private"?"active":""}" data-action="groupTab" data-tab="private">Privés</button></div>
+  <div class="hub-grid-v90">${list.map(card).join("")||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté ou modifiez votre recherche.</span><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>`}</div></section>`;
+}
+function renderGroupView(id){
+  const g=findGroup(id); if(!g)return `<div class="empty-state"><b>Groupe introuvable</b></div>`;
+  const joined=(g.members||[]).includes(state.current), own=g.ownerId===state.current;
+  const posts=state.posts.filter(p=>p.ownerType==="group"&&p.ownerId===g.id&&canSeePost(p)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const members=(g.members||[]).map(findUser).filter(Boolean);
+  return `<section class="group-view-v21">${routeBackBar("Groupes","groups")}<div class="group-cover-large-v21" style="${g.cover?`background-image:url('${esc(g.cover)}')`:''}"><div class="group-cover-overlay-v21"></div><div class="group-cover-title-v21"><span class="type-pill">${esc(g.privacy||"Public")}</span><h1>${esc(g.name)}</h1><p>${esc(g.description||"Communauté Tafaß")}</p></div></div><div class="group-identity-v21"><div class="group-stat-v21"><b>${g.members?.length||0}</b><span>Membres</span></div><div class="group-stat-v21"><b>${posts.length}</b><span>Publications</span></div><div class="group-actions-v21">${own?`<button class="btn secondary" data-action="editGroup" data-id="${g.id}">Modifier</button>`:joined?`<button class="btn secondary" data-action="leaveGroup" data-id="${g.id}">Quitter</button>`:`<button class="btn primary" data-action="joinGroup" data-id="${g.id}">＋ Rejoindre</button>`}<button class="icon-btn" data-action="groupMore" data-id="${g.id}">•••</button></div></div><nav class="group-tabs-v21"><button class="active">Publications</button><button data-action="groupMembers" data-id="${g.id}">Membres</button><button data-action="groupAbout" data-id="${g.id}">À propos</button></nav>${joined||own?`<div class="group-postbox-v21"><button class="news-composer-input-v90" data-action="openGroupComposer" data-id="${g.id}">Publier dans ${esc(g.name)}…</button></div>`:`<div class="group-join-note-v21"><b>Rejoignez ce groupe pour participer.</b><span>Vous pourrez publier et interagir avec la communauté.</span></div>`}<div class="group-posts-v21">${posts.length?posts.map(renderPost).join(""):`<div class="empty-state"><b>Aucune publication</b><span>Les publications du groupe apparaîtront ici.</span></div>`}</div></section>`;
 }
 function renderMedia(type){
   const pageBar=pageContextBar();
@@ -1895,12 +1926,13 @@ function renderAds(){
   ]);
 }
 function openComposer(kind="post"){
-  const page=findPage(state.pageMode);
+  const page=state.pageMode?findPage(state.pageMode):(route==="pageView"?findPage(editingPageId):null);
+  const group=route==="groupView"?findGroup(editingGroupId):null;
   const publisher=page||me();
-  const label=page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
+  const label=group?`Publier dans ${displayName(group)}`:page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
   const accept=(kind==="reel"||kind==="video")?"video/*":kind==="photo"?"image/*":"image/*,video/*";
   modal(label,`<form id="composerForm" class="premium-form composer-modal-v88">
-    <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${page?"PAGE":"COMPTE"}</small></div></div>
+    <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${group?"GROUPE":page?"PAGE":"COMPTE"}</small></div></div>
     <label>Texte<textarea id="composerText" placeholder="Que voulez-vous partager ?"></textarea></label>
     <div class="composer-type-grid"><button type="button" class="composer-type-choice ${kind==="post"?"active":""}" data-kind="post">✦ Publication</button><button type="button" class="composer-type-choice ${kind==="photo"?"active":""}" data-kind="photo">▣ Photo</button><button type="button" class="composer-type-choice ${kind==="video"?"active":""}" data-kind="video">▶ Vidéo</button><button type="button" class="composer-type-choice ${kind==="reel"?"active":""}" data-kind="reel">◆ Reel</button></div>
     <label>Visibilité<select id="composerVisibility"><option>Public</option><option>Amis</option><option>Sélection personnalisée</option><option>Moi uniquement</option></select></label>
@@ -1965,7 +1997,18 @@ function openComposer(kind="post"){
       const max=isImage?15*1024*1024:100*1024*1024;
       if(file.size>max){ toast(`Fichier trop volumineux. Maximum ${isImage?"15 Mo":"100 Mo"}.`); return; }
     }
-    if(page){ toast("Les publications de Page seront activées dans l'étape Pages."); return; }
+    if(group||page){
+      if(submit){submit.disabled=true;submit.textContent="Publication…";}
+      try{
+        const reader=file?new FileReader():null;
+        const mediaData=await new Promise((resolve,reject)=>{if(!reader)return resolve("");reader.onload=()=>resolve(String(reader.result||""));reader.onerror=reject;reader.readAsDataURL(file);});
+        const publishKind=(kind==="video"||kind==="reel")?kind:(kind==="photo"?"photo":(file&&String(file.type||"").startsWith("video/")?"video":"text"));
+        const owner=group||page;
+        const local={id:uid(group?"groupPost":"pagePost"),ownerId:owner.id,ownerType:group?"group":"page",title:"Publication",text,media:mediaData,mediaType:publishKind,visibility:group?(group.privacy==="Public"?"Public":"Amis"):(visibility||"Public"),allowedUsers:[],tags:[],createdAt:new Date().toISOString(),shares:0,reactions:{},myReaction:{}};
+        state.posts.unshift(local); save(); closeModal(); if(group){editingGroupId=group.id;route="groupView";}else{editingPageId=page.id;route="pageView";} render(); toast("Publication publiée avec succès ✓");
+      }catch(err){console.error(err);toast("Publication impossible : "+(err?.message||"erreur"));if(submit){submit.disabled=false;submit.textContent="Publier";}}
+      return;
+    }
     if(submit){submit.disabled=true;submit.textContent="Publication…";}
     toast("Publication en cours…");
     try{
@@ -2130,7 +2173,7 @@ async function handleAction(e,el){
   if(a==="profileFriendsAll"){profileFriendsAll=true;return render();}
   if(a==="clearSearches"){state.searches=[];save();render();return;}
   if(a==="useSearch"){$("globalSearch").value=el.dataset.q;routeTo("search");return;}
-  if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
+  if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes"){editingGroupId=id;return routeTo("groupView");}return toast("Résultat ouvert");}
   if(a==="markAllRead"){
     state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});
     if(supabaseReady()&&state.current){
@@ -2165,7 +2208,17 @@ async function handleAction(e,el){
   if(a==="voiceCall")return voiceCall(id);
   if(a==="voiceInvite")return toast("Message vocal simulé : connectez un backend/WebRTC pour la version réelle.");
   if(a==="createPage")return createPage();
+  if(a==="pageHubTab"){pageHubTab=el.dataset.tab||"discover";return render();}
+  if(a==="clearPageSearch"){window.pageSearch="";return render();}
   if(a==="viewPage"){editingPageId=id;return routeTo("pageView");}
+  if(a==="viewGroup"){editingGroupId=id;return routeTo("groupView");}
+  if(a==="openGroupComposer"){editingGroupId=id;return openComposer("post");}
+  if(a==="groupTab"){groupTab=el.dataset.tab||"discover";return render();}
+  if(a==="groupMore"){const g=findGroup(id);if(!g)return;return modal("Options du groupe",`<div class="premium-options"><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>↗</span><strong>Partager le lien</strong></button>${g.ownerId===state.current?`<button class="menu-card-premium" data-action="editGroup" data-id="${id}"><span>✎</span><strong>Modifier le groupe</strong></button>`:""}</div>`);}
+  if(a==="groupMembers"){const g=findGroup(id);if(!g)return;const ms=(g.members||[]).map(findUser).filter(Boolean);return modal("Membres",ms.length?`<div class="group-members-list-v21">${ms.map(u=>`<button class="group-member-row-v21" data-action="viewProfile" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")}</small></span></button>`).join("")}</div>`:`<div class="empty-state"><b>Aucun membre</b></div>`);}
+  if(a==="groupAbout"){const g=findGroup(id);if(!g)return;return modal("À propos du groupe",`<div class="group-about-v21"><p>${esc(g.description||"Aucune description.")}</p><div><b>Confidentialité</b><span>${esc(g.privacy||"Public")}</span></div><div><b>Membres</b><span>${g.members?.length||0}</span></div></div>`);}
+  if(a==="leaveGroup")return leaveGroup(id);
+
   if(a==="pageMore"){const p=findPage(id);if(!p)return;const own=p.ownerId===state.current;return modal("Options de la Page",`<div class="premium-options">${own?`<button class="menu-card-premium" data-action="editPage" data-id="${id}"><span>✎</span><strong>Modifier la Page</strong></button><button class="menu-card-premium" data-action="switchPage" data-id="${id}"><span>▤</span><strong>Passer en mode Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`:`<button class="menu-card-premium" data-action="followPage" data-id="${id}"><span>＋</span><strong>${state.follows.some(f=>f.from===state.current&&f.to===id)?"Ne plus suivre":"Suivre"}</strong></button><button class="menu-card-premium" data-action="messagePage" data-id="${id}"><span>◈</span><strong>Message</strong></button><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler la Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`}</div>`);}
   if(a==="pageModeHome"){pageTab="posts";return render();}
   if(a==="pageModeMessages"){return routeTo("messages");}
@@ -2662,8 +2715,10 @@ function createPage(){modal("Créer une Page",`<form id="pageForm"><label>Nom de
   $("pageForm").onsubmit=e=>{e.preventDefault();const p={id:uid("page"),ownerId:state.current,name:$("pName").value.trim(),category:$("pCat").value,username:$("pUser").value.trim(),description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:"",cover:"",createdAt:new Date().toISOString()};state.pages.push(p);save();closeModal();render();toast("Page créée");};
 }
 function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=e=>{e.preventDefault();p.name=$("epName").value;p.description=$("epDesc").value;p.category=$("epCat").value;save();closeModal();render();};}
-function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=e=>{e.preventDefault();state.groups.push({id:uid("g"),name:$("gName").value,privacy:$("gPrivacy").value,description:$("gDesc").value,members:[state.current],ownerId:state.current});save();closeModal();render();};}
-function joinGroup(id){const g=state.groups.find(x=>x.id===id);if(g&&!g.members.includes(state.current)){g.members.push(state.current);save();render();toast("Vous avez rejoint le groupe");}}
+function createGroup(){modal("Créer un groupe",`<form id="groupForm" class="premium-form"><label>Nom<input id="gName" required maxlength="80" placeholder="Ex. Passion photo Madagascar"></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc" maxlength="500" placeholder="Présentez votre communauté…"></textarea></label><button class="btn primary wide">Créer le groupe</button></form>`);$("groupForm").onsubmit=e=>{e.preventDefault();const name=$("gName").value.trim();if(!name)return;state.groups.push({id:uid("g"),name,privacy:$("gPrivacy").value,description:$("gDesc").value.trim(),members:[state.current],ownerId:state.current,cover:"",createdAt:new Date().toISOString()});save();closeModal();render();toast("Groupe créé ✓");};}
+function editGroup(id){const g=findGroup(id);if(!g||g.ownerId!==state.current)return toast("Vous n'êtes pas administrateur de ce groupe.");modal("Modifier le groupe",`<form id="editGroupForm" class="premium-form"><label>Nom<input id="egName" value="${esc(g.name||"")}" required></label><label>Confidentialité<select id="egPrivacy"><option ${g.privacy==="Public"?"selected":""}>Public</option><option ${g.privacy==="Privé"?"selected":""}>Privé</option></select></label><label>Description<textarea id="egDesc">${esc(g.description||"")}</textarea></label><button class="btn primary wide">Enregistrer</button></form>`);$("editGroupForm").onsubmit=e=>{e.preventDefault();g.name=$("egName").value.trim();g.privacy=$("egPrivacy").value;g.description=$("egDesc").value.trim();save();closeModal();render();toast("Groupe modifié ✓");};}
+function joinGroup(id){const g=findGroup(id);if(!g)return;if(g.members?.includes(state.current))return routeTo("groupView");g.members=g.members||[];g.members.push(state.current);save();editingGroupId=id;toast("Vous avez rejoint le groupe ✓");return routeTo("groupView");}
+function leaveGroup(id){const g=findGroup(id);if(!g||g.ownerId===state.current)return toast("Le propriétaire ne peut pas quitter son propre groupe.");g.members=(g.members||[]).filter(x=>x!==state.current);save();toast("Vous avez quitté le groupe");return routeTo("groups");}
 async function changePassword(){
   modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Votre mot de passe est géré directement par Supabase Auth. Il n'est jamais enregistré dans le navigateur.</div><label>Mot de passe actuel<input id="oldPass" type="password" autocomplete="current-password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" autocomplete="new-password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
   $("passwordChangeForm").onsubmit=async e=>{
