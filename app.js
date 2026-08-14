@@ -125,7 +125,12 @@ async function startTafaRealtime(){
     ['story_replies','story-reply-change',()=>loadSupabaseStories().then(render)],
     ['messages','message-change',()=>loadSupabaseMessages().then(render)],
     ['conversations','conversation-change',()=>loadSupabaseMessages().then(render)],
-    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)]
+    ['marketplace_listings','marketplace-change',()=>loadSupabaseMarketplace().then(render)],
+    ['pages','page-change',()=>loadSupabasePagesAndGroups().then(render)],
+    ['page_followers','page-follow-change',()=>loadSupabasePagesAndGroups().then(render)],
+    ['groups','group-change',()=>loadSupabasePagesAndGroups().then(render)],
+    ['group_members','group-member-change',()=>loadSupabasePagesAndGroups().then(render)],
+    ['group_join_requests','group-request-change',()=>loadSupabasePagesAndGroups().then(render)]
   ];
 
   specs.forEach(([table,name,refresh,filter])=>{
@@ -363,54 +368,38 @@ async function sendFriend(id){
   if(!id || id===state.current) return;
   if(isFriend(id)) return toast("Vous êtes déjà amis.");
 
-  try{
-    // Source de vérité: public.friendships.
-    // Valeurs autorisées par valid_friend_status: pending, accepted, rejected, blocked.
-    const {data:rows,error:findError}=await SB.from("friendships")
-      .select("id,requester_id,receiver_id,status,created_at,updated_at")
-      .or(`and(requester_id.eq.${state.current},receiver_id.eq.${id}),and(requester_id.eq.${id},receiver_id.eq.${state.current})`)
-      .order("created_at",{ascending:false})
-      .limit(1);
-    if(findError) throw findError;
-
-    const existing=rows?.[0];
-    if(existing){
-      if(existing.status==="accepted") return toast("Vous êtes déjà amis.");
-      if(existing.status==="pending"){
-        if(existing.requester_id===id && existing.receiver_id===state.current) return toast("Cette personne vous a déjà envoyé une invitation.");
-        return toast("Invitation déjà envoyée.");
-      }
-      // Re-open an old rejected/blocked relationship only as a new valid pending state.
-      // Never write unsupported values such as cancelled/declined.
-      if(existing.requester_id===state.current && existing.receiver_id===id && ["rejected","blocked"].includes(existing.status)){
-        const {data,error}=await SB.from("friendships")
-          .update({status:"pending",updated_at:new Date().toISOString()})
-          .eq("id",existing.id)
-          .eq("requester_id",state.current)
-          .eq("receiver_id",id)
-          .select("id,requester_id,receiver_id,status,created_at,updated_at")
-          .single();
-        if(error) throw error;
-        state.friendRequests=state.friendRequests.filter(x=>x.id!==data.id);
-        state.friendRequests.unshift({id:data.id,from:data.requester_id,to:data.receiver_id,status:"pending",createdAt:data.created_at,respondedAt:data.updated_at});
-        save();
-        await notify(id,"friend_request",`${displayName(me())} vous a envoyé une invitation d’ami.`);
-        render();
-        toast("Invitation envoyée.");
-        return;
-      }
+  const existing=friendRequestBetween(state.current,id);
+  if(existing){
+    if(existing.from===id && existing.to===state.current){
+      return toast("Cette personne vous a déjà envoyé une invitation.");
     }
+    if(existing.from===state.current){
+      return toast("Invitation déjà envoyée.");
+    }
+  }
 
+  try{
+    // Schéma réel: friendships(requester_id, receiver_id, status, ...)
     const {data,error}=await SB.from("friendships")
-      .insert({requester_id:state.current,receiver_id:id,status:"pending"})
+      .insert({
+        requester_id:state.current,
+        receiver_id:id,
+        status:"pending"
+      })
       .select("id,requester_id,receiver_id,status,created_at,updated_at")
       .single();
+
     if(error) throw error;
 
     state.friendRequests.unshift({
-      id:data.id,from:data.requester_id,to:data.receiver_id,status:"pending",
-      createdAt:data.created_at,respondedAt:data.updated_at
+      id:data.id,
+      from:data.requester_id,
+      to:data.receiver_id,
+      status:data.status,
+      createdAt:data.created_at,
+      respondedAt:data.updated_at
     });
+
     save();
     await notify(id,"friend_request",`${displayName(me())} vous a envoyé une invitation d’ami.`);
     render();
@@ -428,17 +417,32 @@ async function acceptFriend(id){
   if(!r || r.to!==state.current || r.status!=="pending") return;
 
   try{
-    // IMPORTANT: accept = UPDATE de la ligne pending existante.
-    // La seule valeur de succès autorisée ici est "accepted".
-    const {error}=await SB.from("friendships")
-      .update({status:"accepted",updated_at:new Date().toISOString()})
+    // L'invitation devient directement une amitié dans la même ligne.
+    const {data,error}=await SB.from("friendships")
+      .update({
+        status:"accepted",
+        updated_at:new Date().toISOString()
+      })
       .eq("id",id)
       .eq("receiver_id",state.current)
-      .eq("status","pending");
+      .eq("status","pending")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
+      .single();
+
     if(error) throw error;
 
-    // Reload from Supabase so UI never invents a friendship row locally.
-    await loadSupabaseFriends();
+    r.status="accepted";
+    r.respondedAt=data.updated_at;
+    state.friendRequests=state.friendRequests.filter(x=>x.id!==id);
+    state.friendships.push({
+      id:data.id,
+      a:data.requester_id,
+      b:data.receiver_id,
+      createdAt:data.created_at,
+      updatedAt:data.updated_at
+    });
+
+    save();
     await notify(r.from,"friend_request_accepted",`${displayName(me())} a accepté votre invitation d’ami.`);
     render();
     toast("Invitation acceptée.");
@@ -454,28 +458,23 @@ async function declineFriend(id){
   if(!r || (r.to!==state.current && r.from!==state.current) || r.status!=="pending") return;
 
   try{
-    if(r.from===state.current){
-      // Annulation d'une invitation sortante: suppression de la ligne pending.
-      const {error}=await SB.from("friendships")
-        .delete()
-        .eq("id",id)
-        .eq("requester_id",state.current)
-        .eq("receiver_id",r.to)
-        .eq("status","pending");
-      if(error) throw error;
-      toast("Invitation annulée.");
-    }else{
-      // Refus d'une invitation entrante: valeur autorisée = rejected.
-      const {error}=await SB.from("friendships")
-        .update({status:"rejected",updated_at:new Date().toISOString()})
-        .eq("id",id)
-        .eq("receiver_id",state.current)
-        .eq("status","pending");
-      if(error) throw error;
-      toast("Invitation refusée.");
-    }
-    await loadSupabaseFriends();
+    const newStatus=r.from===state.current ? "cancelled" : "declined";
+    const {data,error}=await SB.from("friendships")
+      .update({
+        status:newStatus,
+        updated_at:new Date().toISOString()
+      })
+      .eq("id",id)
+      .or(`requester_id.eq.${state.current},receiver_id.eq.${state.current}`)
+      .eq("status","pending")
+      .select("id,requester_id,receiver_id,status,created_at,updated_at")
+      .single();
+    if(error) throw error;
+
+    state.friendRequests=state.friendRequests.filter(x=>x.id!==id);
+    save();
     render();
+    toast(newStatus==="cancelled"?"Invitation annulée.":"Invitation refusée.");
   }catch(err){
     console.error("declineFriend:",err);
     toast("Action impossible : "+(err.message||"erreur Supabase"));
@@ -569,6 +568,37 @@ async function uploadMarketplaceImage(file){
   return data?.publicUrl||"";
 }
 
+async function loadSupabasePagesAndGroups(){
+  if(!supabaseReady() || !state.current) return;
+  try{
+    const [pagesRes, followersRes, groupsRes, membersRes, requestsRes]=await Promise.all([
+      SB.from('pages').select('*').order('created_at',{ascending:false}).limit(500),
+      SB.from('page_followers').select('page_id,user_id,created_at'),
+      SB.from('groups').select('*').order('created_at',{ascending:false}).limit(500),
+      SB.from('group_members').select('group_id,user_id,role,status,joined_at'),
+      SB.from('group_join_requests').select('id,group_id,user_id,status,created_at,updated_at')
+    ]);
+    for(const r of [pagesRes,followersRes,groupsRes,membersRes,requestsRes]) if(r.error) throw r.error;
+    const followers=followersRes.data||[], members=membersRes.data||[], requests=requestsRes.data||[];
+    state.pages=(pagesRes.data||[]).map(p=>({
+      id:p.id, ownerId:p.owner_id, name:p.name||'', category:p.category||'Page', username:p.username||'', description:p.description||'',
+      email:p.email||'', phone:p.phone||'', website:p.website||'', address:p.address||'', hours:p.hours||'', services:p.services||'',
+      followers:followers.filter(f=>f.page_id===p.id).length, verified:!!p.verified, type:'page', avatar:p.avatar_url||'', cover:p.cover_url||'', createdAt:p.created_at
+    }));
+    state.pageFollows=followers.filter(f=>f.user_id===state.current).map(f=>({pageId:f.page_id,userId:f.user_id,createdAt:f.created_at}));
+    state.groups=(groupsRes.data||[]).map(g=>({
+      id:g.id, ownerId:g.owner_id, name:g.name||'', privacy:g.privacy||'Public', description:g.description||'', category:g.category||'Général',
+      rules:g.rules||'', avatar:g.avatar_url||'', cover:g.cover_url||'', createdAt:g.created_at, memberCount:Number(g.member_count||0),
+      members:members.filter(m=>m.group_id===g.id&&m.status==='active').map(m=>m.user_id),
+      memberRows:members.filter(m=>m.group_id===g.id),
+      joinRequests:requests.filter(r=>r.group_id===g.id)
+    }));
+    state.groupMemberships=members.filter(m=>m.user_id===state.current);
+    state.groupJoinRequests=requests.filter(r=>r.user_id===state.current);
+    save();
+  }catch(e){ console.warn('Pages/Groupes Supabase:',e.message||e); }
+}
+
 async function hydrateSupabaseSession(){
   if(!supabaseReady()) return false;
   const {data:{session},error} = await SB.auth.getSession();
@@ -599,6 +629,7 @@ async function hydrateSupabaseSession(){
   await loadSupabaseFriends();
   await loadSupabaseStories();
   await loadSupabaseMarketplace();
+  await loadSupabasePagesAndGroups();
   save();
   return true;
 }
@@ -713,7 +744,7 @@ async function loadSupabasePosts(){
 
   const visibilityFromDb=v=>({public:"Public",friends:"Amis",private:"Moi uniquement","public":"Public","friends":"Amis","private":"Moi uniquement",Public:"Public",Amis:"Amis","Moi uniquement":"Moi uniquement"}[String(v||"")] || (v||"Public"));
   state.posts=(data||[]).map(row=>({
-    id:row.id, ownerId:row.owner_id || row.user_id, ownerType:"user",
+    id:row.id, ownerId:row.publisher_page_id || row.owner_id || row.user_id, ownerType:row.publisher_page_id?'page':'user', groupId:row.group_id||null, authorId:row.owner_id || row.user_id,
     title:row.title||"Publication", text:row.text ?? row.content ?? "",
     media:row.media_url||"", mediaType:(row.media_type||"text"),
     visibility:visibilityFromDb(row.visibility),
@@ -800,7 +831,7 @@ function postVisibilityToDb(value){
     private:"Moi uniquement"
   }[value] || "Public");
 }
-async function createSupabasePost({text,file,visibility,kind,ownerId=state.current}){
+async function createSupabasePost({text,file,visibility,kind,ownerId=state.current,publisherPageId=null,groupId=null}){
   if(!supabaseReady()) throw new Error("Supabase non disponible.");
 
   const {data:{user},error:userError}=await SB.auth.getUser();
@@ -809,6 +840,14 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
 
   state.current=user.id;
   ownerId=user.id;
+  if(publisherPageId){
+    const page=findPage(publisherPageId);
+    if(!page || page.ownerId!==user.id) throw new Error("Vous ne pouvez publier qu'au nom de votre propre Page.");
+  }
+  if(groupId){
+    const g=findGroup(groupId);
+    if(!g || !g.members.includes(user.id)) throw new Error('Vous devez être membre du groupe pour publier.');
+  }
 
   if(visibility==="Sélection personnalisée") {
     throw new Error("La visibilité personnalisée n'est pas encore disponible.");
@@ -838,10 +877,13 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
   const payload={
     id,
     user_id: ownerId,
+    owner_id: ownerId,
     content: String(text||""),
     media_url: media_url || null,
     media_type,
-    visibility: postVisibilityToDb(visibility)
+    visibility: groupId ? 'Group' : postVisibilityToDb(visibility),
+    publisher_page_id: publisherPageId || null,
+    group_id: groupId || null
   };
 
   const {error}=await SB.from("posts").insert(payload);
@@ -862,7 +904,9 @@ async function createSupabasePost({text,file,visibility,kind,ownerId=state.curre
     content: String(text||""),
     media_url: media_url || "",
     media_type,
-    visibility: postVisibilityToDb(visibility),
+    visibility: groupId ? 'Group' : postVisibilityToDb(visibility),
+    publisher_page_id: publisherPageId || null,
+    group_id: groupId || null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
@@ -992,10 +1036,6 @@ let registerAvatar = "";
 let profileFriendsAll = false;
 let committedSearchQuery = "";
 let editingPageId = null;
-let editingGroupId = null;
-let groupTab = "discover";
-let pageHubTab = "discover";
-let groupSearch = "";
 let profileTab = "posts";
 let profileViewingId = null;
 let pageTab = "posts";
@@ -1034,8 +1074,8 @@ function loadState(){
 }
 function baseState(){
   return {
-    users:[structuredClone(ADMIN)], pages:[], groups:[], posts:[], stories:[], comments:[], notifications:[],
-    conversations:[], messages:[], friendRequests:[], friendships:[], follows:[], groupRequests:[], saved:[], searches:[],
+    users:[structuredClone(ADMIN)], pages:[], pageFollows:[], groups:[], groupMemberships:[], groupJoinRequests:[], posts:[], stories:[], comments:[], notifications:[],
+    conversations:[], messages:[], friendRequests:[], friendships:[], follows:[], saved:[], searches:[],
     badgeRequests:[], reports:[], events:[], marketplace:[], settings:{dark:false,language:"Français",privacy:"public"},
     current:null, pageMode:null, drafts:[]
   };
@@ -1043,7 +1083,7 @@ function baseState(){
 function me(){ return state.users.find(u=>u.id===state.current) || null; }
 function findUser(id){ return state.users.find(u=>u.id===id); }
 function findPage(id){ return state.pages.find(p=>p.id===id); }
-function findGroup(id){ return (state.groups||[]).find(g=>g.id===id); }
+function findGroup(id){ return state.groups.find(g=>g.id===id); }
 function displayName(entity){ return entity?.name || [entity?.firstName,entity?.lastName].filter(Boolean).join(" ") || "Utilisateur"; }
 const DEFAULT_AVATAR_SVG = `assets/default-avatar.svg`;
 function avatar(entity, cls="avatar"){
@@ -1099,7 +1139,7 @@ async function notify(userId,type,text,entityId=null,commentId=null){
   return local;
 }
 function routeTo(r, options={}){
-  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView","groupView"];
+  const allowed=["home","friends","messages","search","profile","notifications","pages","groups","groupView","videos","marketplace","reels","saved","events","menu","settings","privacy","security","accounts","language","accessibility","devices","payments","badge","ads","activity","help","terms","about","admin","pageView"];
   if(!allowed.includes(r)) r="home";
   if(!options.replace && route!==r) routeHistory.push(route);
   route=r;
@@ -1137,12 +1177,6 @@ function isOnline(u){ return !!u?.online; }
 function canSeePost(p){
   if(p.ownerId===state.current)return true;
   if(p.ownerType==="page")return true;
-  if(p.ownerType==="group"){
-    const g=findGroup(p.ownerId);
-    if(!g)return false;
-    if(g.privacy!=="Public" && !(g.members||[]).includes(state.current))return false;
-    return true;
-  }
   if((p.visibility||"Public")==="Public")return true;
   if(p.visibility==="Amis")return isFriend(p.ownerId);
   if(p.visibility==="Sélection personnalisée")return (p.allowedUsers||[]).includes(state.current);
@@ -1163,10 +1197,6 @@ function render(){
   const mb=$("msgBadge"); const mu=unreadMessages(); if(mb){mb.textContent=mu>99?"99+":mu;mb.classList.toggle("hidden",mu===0)}
   const fb=$("friendsBadge"); const fi=pendingFriendInvites(); if(fb){fb.textContent=fi>99?"99+":fi;fb.classList.toggle("hidden",fi===0)}
   $("mainContent").innerHTML=renderRoute();
-  const pageSearchInput=$("pageSearchInput");
-  if(pageSearchInput){pageSearchInput.oninput=()=>{window.pageSearch=pageSearchInput.value;clearTimeout(window.__pageSearchTimer);window.__pageSearchTimer=setTimeout(()=>{if(route==="pages")render();},180);};}
-  const groupSearchInput=$("groupSearchInput");
-  if(groupSearchInput){groupSearchInput.oninput=()=>{groupSearch=groupSearchInput.value;render();};}
   $("rightSuggestions").innerHTML=renderSuggestions(3);
   localizeApp();
   setupNavigation();
@@ -1177,7 +1207,8 @@ function renderRoute(){
   switch(route){
     case"home":return renderHome();case"friends":return renderFriends();case"search":return renderSearch();case"profile":return renderProfile(findUser(profileViewingId||state.current)||me());
     case"notifications":return renderNotifications();case"messages":return renderMessages();case"pages":return renderPages();
-    case"groups":return renderGroups();case"groupView":return renderGroupView(editingGroupId);case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
+    case"groups":return renderGroups();
+    case"groupView":return renderGroupView(editingGroupId);case"videos":return renderMedia("video");case"marketplace":return renderMarketplace();case"reels":return renderMedia("reel");case"saved":return renderSaved();
     case"events":return renderEvents();case"menu":return renderMenu();case"settings":return renderSettings();case"privacy":return renderPrivacy();
     case"security":return renderSecurity();case"accounts":return renderAccounts();case"language":return renderLanguage();case"accessibility":return renderAccessibility();
     case"devices":return renderDevices();case"payments":return renderPayments();case"badge":return renderBadge();case"ads":return renderAds();
@@ -1224,14 +1255,14 @@ function renderExpandablePostText(p){
   return `<div class="post-text ${expandable?"is-expandable":""} ${expanded?"is-expanded":""}"><span>${esc(shown)}</span>${expandable?` <button type="button" class="post-text-toggle" data-action="togglePostText" data-id="${esc(p.id)}">${expanded?"Voir moins":"Voir plus"}</button>`:""}</div>`;
 }
 function renderPost(p){
-  const owner=p.ownerType==="page"?findPage(p.ownerId):p.ownerType==="group"?findGroup(p.ownerId):findUser(p.ownerId); if(!owner)return"";
+  const owner=p.ownerType==="page"?findPage(p.ownerId):findUser(p.ownerId); if(!owner)return"";
   if(!canSeePost(p))return"";
   const reactions=p.reactions||{}, count=Object.values(reactions).reduce((a,b)=>a+b,0), mine=p.myReaction?.[state.current]||"";
   const comments=state.comments.filter(c=>c.postId===p.id&&!c.parentId), media=p.media;
   const notificationFocus=window.tafaNotificationTarget?.postId===p.id; 
   const isVideoMedia=p.mediaType==="video" || p.mediaType==="reel";
   const mediaHtml=media?(isVideoMedia?`<div class="post-media-wrap media-click ${p.mediaType==="reel"?"post-reel-media":"post-video-media"}" data-action="viewMedia" data-id="${p.id}"><video class="post-media" src="${esc(media)}" controls playsinline preload="metadata"></video></div>`:`<div class="post-media-wrap media-click post-image-media" data-action="viewMedia" data-id="${p.id}"><img class="post-media" src="${esc(media)}" alt="Publication de ${esc(displayName(owner))}" loading="lazy"></div>`):"";
-  const ownerAction=p.ownerType==="page"?"viewPage":p.ownerType==="group"?"viewGroup":"viewProfile";
+  const ownerAction=p.ownerType==="page"?"viewPage":"viewProfile";
   const deleteButton = p.ownerId===state.current
     ? `<button class="icon-btn post-delete-btn" type="button" title="Supprimer cette publication" aria-label="Supprimer cette publication" data-action="delete-post" data-post-id="${esc(p.id)}">🗑️</button>`
     : "";
@@ -1572,26 +1603,23 @@ function renderChatPremium(c){
   <form class="chat-compose-premium" data-chat-form="${c.id}"><button type="button" class="icon-btn" data-action="attachFile">＋</button><input id="chatFile_${c.id}" type="file" class="hidden" multiple accept="image/*,video/*,audio/*,.apk,.pdf,.zip,.rar,.doc,.docx,.xls,.xlsx,.txt,.ppt,.pptx"><div class="chat-input-shell"><input name="text" placeholder="Écrire un message..."><span class="chat-file-hint">Photo · Vidéo · Fichier</span></div><button class="send-btn">➤</button></form>`;
 }
 function renderPages(){
-  const all=state.pages||[];
-  const mine=all.filter(p=>p.ownerId===state.current);
-  const q=String(window.pageSearch||"").toLowerCase().trim();
-  const visible=q?all.filter(p=>`${p.name||""} ${p.username||""} ${p.category||""} ${p.description||""}`.toLowerCase().includes(q)):all;
-  const discover=visible.filter(p=>p.ownerId!==state.current);
-  const followCount=p=>state.follows.filter(f=>f.to===p.id).length||p.followers||0;
-  const card=p=>`<article class="page-card-premium page-card-v21">
-    <div class="page-card-cover" style="${p.cover?`background-image:url('${esc(p.cover)}')`:''}"><span class="page-label">PAGE</span></div>
-    <div class="page-card-body">
-      <div class="page-card-avatar">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc((p.name||"P")[0])}</div>
-      <h2>${esc(p.name)} ${verified(p)}</h2><span class="page-category">${esc(p.category||"Page")}</span>
-      <p>${esc(p.description||"Votre Page Tafaß.")}</p>
-      <div class="page-mini-stats"><span><b>${followCount(p)}</b> abonnés</span><span><b>${state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page").length}</b> publications</span></div>
-      <div class="page-card-actions"><button class="btn primary" data-action="viewPage" data-id="${p.id}">Ouvrir</button>${p.ownerId===state.current?`<button class="btn secondary" data-action="switchPage" data-id="${p.id}">Mode Page</button>`:`<button class="btn secondary" data-action="followPage" data-id="${p.id}">${state.follows.some(f=>f.from===state.current&&f.to===p.id)?"✓ Suivi":"＋ Suivre"}</button>`}</div>
-    </div></article>`;
-  return `${routeBackBar("Menu","menu")}<section class="pages-premium pages-hub-v21">
-    <div class="premium-page-head"><div><span class="eyebrow">TAFAß · PROFESSIONNEL</span><h1>Pages</h1><p>Créez et développez une présence professionnelle pour une marque, une entreprise, un artiste ou un projet.</p></div><button class="btn primary" data-action="createPage">＋ Créer une Page</button></div>
-    <div class="page-hub-search-v21"><span>⌕</span><input id="pageSearchInput" value="${esc(window.pageSearch||"")}" placeholder="Rechercher une Page, une marque ou un artiste"><button class="clear-search-premium" data-action="clearPageSearch">Effacer</button></div>
-    <div class="page-hub-tabs-v21"><button class="${pageHubTab==="mine"?"active":""}" data-action="pageHubTab" data-tab="mine">Mes Pages <b>${mine.length}</b></button><button class="${pageHubTab!=="mine"?"active":""}" data-action="pageHubTab" data-tab="discover">Découvrir <b>${discover.length}</b></button></div>
-    <div class="page-grid-premium">${(pageHubTab==="mine"?mine:discover).map(card).join("")||`<div class="empty-state"><b>${pageHubTab==="mine"?"Vous n'avez pas encore de Page":"Aucune Page trouvée"}</b><span>${pageHubTab==="mine"?"Créez votre première Page pour commencer.":"Essayez une autre recherche."}</span></div>`}</div>
+  const mine=state.pages.filter(p=>p.ownerId===state.current);
+  return `${routeBackBar("Menu","menu")}<section class="pages-premium">
+    <div class="premium-page-head">
+      <div><span class="eyebrow">ESPACE CRÉATEUR</span><h1>Pages</h1><p>Vos Pages professionnelles, artistes, marques et communautés.</p></div>
+      <button class="btn primary" data-action="createPage">＋ Créer une Page</button>
+    </div>
+    <div class="page-grid-premium">${mine.map(p=>`<article class="page-card-premium">
+      <div class="page-card-cover" style="${p.cover?`background-image:url('${esc(p.cover)}')`:""}"><span class="page-label">PAGE</span></div>
+      <div class="page-card-body">
+        <div class="page-card-avatar">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc((p.name||"P")[0])}</div>
+        <h2>${esc(p.name)} ${verified(p)}</h2>
+        <span class="page-category">${esc(p.category||"Page")}</span>
+        <p>${esc(p.description||"Votre Page Tafaß.")}</p>
+        <div class="page-mini-stats"><span><b>${p.followers||0}</b> followers</span><span><b>${state.posts.filter(x=>x.ownerId===p.id&&x.ownerType==="page").length}</b> publications</span></div>
+        <div class="page-card-actions"><button class="btn primary" data-action="viewPage" data-id="${p.id}">Ouvrir</button><button class="btn secondary" data-action="switchPage" data-id="${p.id}">Passer à ma Page</button></div>
+      </div>
+    </article>`).join("")||`<div class="empty-state"><b>Vous n'avez pas encore de Page</b><span>Créez une Page pour une marque, une entreprise, un artiste ou un projet.</span></div>`}</div>
     ${state.pageMode?`<div class="page-mode-banner"><b>Mode Page actif</b><span>${esc(findPage(state.pageMode)?.name||"")}</span><button class="btn secondary" data-action="leavePageMode">Revenir à mon compte</button></div>`:""}
   </section>`;
 }
@@ -1604,7 +1632,7 @@ function renderPageView(id){
   const followers=state.follows.filter(f=>f.to===p.id).length || p.followers || 0;
   const following=state.follows.filter(f=>f.from===p.id).length || 0;
   const own=p.ownerId===state.current;
-  const followExists=state.follows.some(f=>f.from===state.current&&f.to===p.id);
+  const followExists=(state.pageFollows||[]).some(f=>f.pageId===p.id&&f.userId===state.current);
   let list=pageTab==="photos"?photos:pageTab==="videos"?videos:pageTab==="reels"?reels:posts;
   let content;
   if(pageTab==="about"){
@@ -1641,23 +1669,18 @@ function renderPageView(id){
 }
 function renderGroups(){
   const gs=state.groups||[];
-  const q=String(groupSearch||"").toLowerCase().trim();
-  let list=q?gs.filter(g=>`${g.name||""} ${g.description||""}`.toLowerCase().includes(q)):gs;
-  if(groupTab==="mine") list=list.filter(g=>(g.members||[]).includes(state.current));
-  if(groupTab==="public") list=list.filter(g=>g.privacy==="Public");
-  if(groupTab==="private") list=list.filter(g=>g.privacy==="Privé");
-  const card=g=>{const joined=(g.members||[]).includes(state.current);return `<article class="hub-card-v90 group-card-v21"><div class="group-cover-v21" style="${g.cover?`background-image:url('${esc(g.cover)}')`:''}"><span class="group-cover-icon">◉</span><span class="type-pill">${esc(g.privacy||"Public")}</span></div><div class="hub-card-body"><h2>${esc(g.name)}</h2><p>${esc(g.description||"Communauté Tafaß")}</p><div class="hub-stats-v90"><span>${g.members?.length||0} membres</span><span>${g.ownerId===state.current?"Votre groupe":g.privacy==="Privé"?"Groupe privé":"Communauté publique"}</span></div><div class="group-card-actions-v21"><button class="btn primary" data-action="viewGroup" data-id="${g.id}">Ouvrir</button>${g.ownerId===state.current?`<button class="btn secondary" data-action="editGroup" data-id="${g.id}">Modifier</button>`:joined?`<button class="btn secondary" data-action="leaveGroup" data-id="${g.id}">Quitter</button>`:`<button class="btn secondary" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></div></article>`};
-  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90 groups-hub-v21"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS</span><h1>Groupes</h1><p>Créez, découvrez et animez des communautés autour de vos centres d'intérêt.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
-  <div class="hub-toolbar-v90 groups-toolbar-v21"><div class="hub-search-v90"><span>⌕</span><input id="groupSearchInput" value="${esc(groupSearch)}" placeholder="Rechercher un groupe"></div><button class="hub-filter-v90 ${groupTab==="discover"?"active":""}" data-action="groupTab" data-tab="discover">Tous</button><button class="hub-filter-v90 ${groupTab==="mine"?"active":""}" data-action="groupTab" data-tab="mine">Mes groupes</button><button class="hub-filter-v90 ${groupTab==="public"?"active":""}" data-action="groupTab" data-tab="public">Publics</button><button class="hub-filter-v90 ${groupTab==="private"?"active":""}" data-action="groupTab" data-tab="private">Privés</button></div>
-  <div class="hub-grid-v90">${list.map(card).join("")||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté ou modifiez votre recherche.</span><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>`}</div></section>`;
+  return `${routeBackBar("Menu","menu")}<section class="hub-premium-v90"><div class="hub-hero-v90"><div><span class="eyebrow">TAFAß · COMMUNAUTÉS RÉELLES</span><h1>Groupes</h1><p>Communautés synchronisées avec Supabase en temps réel.</p></div><button class="btn primary" data-action="createGroup">＋ Créer un groupe</button></div>
+  <div class="hub-toolbar-v90"><div class="hub-search-v90">⌕ <input id="groupSearch" placeholder="Rechercher un groupe"></div><button class="hub-filter-v90" data-action="groupFilter" data-filter="all">Tous</button><button class="hub-filter-v90" data-action="groupFilter" data-filter="private">Privés</button><button class="hub-filter-v90" data-action="groupFilter" data-filter="public">Publics</button></div>
+  <div class="hub-grid-v90">${gs.map(g=>{const member=g.members.includes(state.current), pending=(g.joinRequests||[]).some(r=>r.user_id===state.current&&r.status==='pending'); return `<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(g.privacy||'Public')}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||'Communauté Tafaß')}</p><div class="hub-stats-v90"><span>${g.memberCount||g.members.length} membres</span><span>${esc(g.category||'Général')}</span></div><button class="btn secondary wide" data-action="viewGroup" data-id="${g.id}">Voir le groupe</button>${member?`<button class="btn primary wide" data-action="groupComposer" data-id="${g.id}">Publier</button>`:g.privacy==='Privé'?(pending?`<button class="btn secondary wide" disabled>Demande en attente</button>`:`<button class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`):`<button class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></article>`}).join('')||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
 }
 function renderGroupView(id){
-  const g=findGroup(id); if(!g)return `<div class="empty-state"><b>Groupe introuvable</b></div>`;
-  const joined=(g.members||[]).includes(state.current), own=g.ownerId===state.current;
-  const posts=state.posts.filter(p=>p.ownerType==="group"&&p.ownerId===g.id&&canSeePost(p)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
-  const members=(g.members||[]).map(findUser).filter(Boolean);
-  return `<section class="group-view-v21">${routeBackBar("Groupes","groups")}<div class="group-cover-large-v21" style="${g.cover?`background-image:url('${esc(g.cover)}')`:''}"><div class="group-cover-overlay-v21"></div><div class="group-cover-title-v21"><span class="type-pill">${esc(g.privacy||"Public")}</span><h1>${esc(g.name)}</h1><p>${esc(g.description||"Communauté Tafaß")}</p></div></div><div class="group-identity-v21"><div class="group-stat-v21"><b>${g.members?.length||0}</b><span>Membres</span></div><div class="group-stat-v21"><b>${posts.length}</b><span>Publications</span></div><div class="group-stat-v21"><b>${g.category?esc(g.category):"Communauté"}</b><span>Catégorie</span></div><div class="group-actions-v21">${own?`<button class="btn secondary" data-action="editGroup" data-id="${g.id}">Modifier</button>`:joined?`<button class="btn secondary" data-action="leaveGroup" data-id="${g.id}">Quitter</button>`:`<button class="btn primary" data-action="joinGroup" data-id="${g.id}">＋ Rejoindre</button>`}<button class="icon-btn" data-action="groupMore" data-id="${g.id}">•••</button></div></div><nav class="group-tabs-v21"><button class="active">Publications</button><button data-action="groupMembers" data-id="${g.id}">Membres</button><button data-action="groupAbout" data-id="${g.id}">À propos</button></nav>${joined||own?`<div class="group-postbox-v21"><button class="news-composer-input-v90" data-action="openGroupComposer" data-id="${g.id}">Publier dans ${esc(g.name)}…</button></div>`:`<div class="group-join-note-v21"><b>Rejoignez ce groupe pour participer.</b><span>Vous pourrez publier et interagir avec la communauté.</span></div>`}<div class="group-posts-v21">${posts.length?posts.map(renderPost).join(""):`<div class="empty-state"><b>Aucune publication</b><span>Les publications du groupe apparaîtront ici.</span></div>`}</div></section>`;
+  const g=findGroup(id); if(!g)return `<div class="empty">Groupe introuvable.</div>`;
+  const member=g.members.includes(state.current), own=g.ownerId===state.current;
+  const posts=state.posts.filter(p=>p.groupId===g.id&&canSeePost(p));
+  const requests=(g.joinRequests||[]).filter(r=>r.status==='pending' && (own||r.user_id===state.current));
+  return `${routeBackBar('Groupes','groups')}<section class="page-view-v90"><div class="page-cover-v90"><div class="cover-shade"></div></div><div class="page-identity-v90"><div class="page-avatar-v90">◉</div><div class="page-title-v90"><span class="type-pill">GROUPE · ${esc(g.privacy)}</span><h1>${esc(g.name)}</h1><p>${esc(g.description||'')}</p><strong>${g.memberCount||g.members.length} membres · ${esc(g.category||'Général')}</strong></div><div class="page-actions-v90">${member?`<button class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button>`:g.privacy==='Privé'?`<button class="btn primary" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`:`<button class="btn primary" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></div><nav class="profile-tabs-premium"><button class="active">Publications</button><button>À propos</button><button>Membres</button></nav><div class="saved-stack-v90">${own&&requests.length?`<div class="card"><h3>Demandes d'adhésion</h3>${requests.map(r=>`<div class="list-item"><span>${esc(displayName(findUser(r.user_id)||{name:'Utilisateur'}))}</span><div><button class="btn primary" data-action="approveGroupJoin" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectGroupJoin" data-id="${r.id}">Refuser</button></div></div>`).join('')}</div>`:''}${posts.length?posts.map(renderPost).join(''):`<div class="empty-state"><b>Aucune publication</b><span>Les publications du groupe apparaîtront ici.</span></div>`}</div></section>`;
 }
+
 function renderMedia(type){
   const pageBar=pageContextBar();
   const normalizedType=type==="video"?"video":"reel";
@@ -1926,13 +1949,12 @@ function renderAds(){
   ]);
 }
 function openComposer(kind="post"){
-  const page=state.pageMode?findPage(state.pageMode):(route==="pageView"?findPage(editingPageId):null);
-  const group=route==="groupView"?findGroup(editingGroupId):null;
-  const publisher=group||page||me();
-  const label=group?`Publier dans ${displayName(group)}`:page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
+  const page=findPage(state.pageMode);
+  const publisher=page||me();
+  const label=page?`Publier au nom de ${displayName(page)}`:`Publier sur Tafaß`;
   const accept=(kind==="reel"||kind==="video")?"video/*":kind==="photo"?"image/*":"image/*,video/*";
   modal(label,`<form id="composerForm" class="premium-form composer-modal-v88">
-    <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${group?"GROUPE":page?"PAGE":"COMPTE"}</small></div></div>
+    <div class="composer-publisher-premium">${avatar(publisher,"avatar")}<div><b>${esc(displayName(publisher))}</b><small>${page?"PAGE":"COMPTE"}</small></div></div>
     <label>Texte<textarea id="composerText" placeholder="Que voulez-vous partager ?"></textarea></label>
     <div class="composer-type-grid"><button type="button" class="composer-type-choice ${kind==="post"?"active":""}" data-kind="post">✦ Publication</button><button type="button" class="composer-type-choice ${kind==="photo"?"active":""}" data-kind="photo">▣ Photo</button><button type="button" class="composer-type-choice ${kind==="video"?"active":""}" data-kind="video">▶ Vidéo</button><button type="button" class="composer-type-choice ${kind==="reel"?"active":""}" data-kind="reel">◆ Reel</button></div>
     <label>Visibilité<select id="composerVisibility"><option>Public</option><option>Amis</option><option>Sélection personnalisée</option><option>Moi uniquement</option></select></label>
@@ -1997,25 +2019,14 @@ function openComposer(kind="post"){
       const max=isImage?15*1024*1024:100*1024*1024;
       if(file.size>max){ toast(`Fichier trop volumineux. Maximum ${isImage?"15 Mo":"100 Mo"}.`); return; }
     }
-    if(group||page){
-      if(submit){submit.disabled=true;submit.textContent="Publication…";}
-      try{
-        const reader=file?new FileReader():null;
-        const mediaData=await new Promise((resolve,reject)=>{if(!reader)return resolve("");reader.onload=()=>resolve(String(reader.result||""));reader.onerror=reject;reader.readAsDataURL(file);});
-        const publishKind=(kind==="video"||kind==="reel")?kind:(kind==="photo"?"photo":(file&&String(file.type||"").startsWith("video/")?"video":"text"));
-        const owner=group||page;
-        const local={id:uid(group?"groupPost":"pagePost"),ownerId:owner.id,ownerType:group?"group":"page",title:"Publication",text,media:mediaData,mediaType:publishKind,visibility:group?(group.privacy==="Public"?"Public":"Amis"):(visibility||"Public"),allowedUsers:[],tags:[],createdAt:new Date().toISOString(),shares:0,reactions:{},myReaction:{}};
-        state.posts.unshift(local); save(); closeModal(); if(group){editingGroupId=group.id;route="groupView";}else{editingPageId=page.id;route="pageView";} render(); toast("Publication publiée avec succès ✓");
-      }catch(err){console.error(err);toast("Publication impossible : "+(err?.message||"erreur"));if(submit){submit.disabled=false;submit.textContent="Publier";}}
-      return;
-    }
+
     if(submit){submit.disabled=true;submit.textContent="Publication…";}
     toast("Publication en cours…");
     try{
       const publishKind=(kind==="video"||kind==="reel")?kind:(kind==="post"&&file&&String(file.type||"").toLowerCase().startsWith("video/")?"video":kind);
-      const created=await createSupabasePost({text,file,visibility,kind:publishKind});
+      const created=await createSupabasePost({text,file,visibility,kind:publishKind,publisherPageId:page?.id||null,groupId});
       const local={
-        id:created.id, ownerId:created.user_id, ownerType:"user", title:"Publication",
+        id:created.id, ownerId:created.publisher_page_id||created.user_id, ownerType:created.publisher_page_id?'page':'user', groupId:created.group_id||null, authorId:created.user_id, title:"Publication",
         text:created.content, media:created.media_url, mediaType:created.media_type,
         visibility:({public:"Public",friends:"Amis",private:"Moi uniquement"}[created.visibility]||visibility),
         allowedUsers:[], tags:[], createdAt:created.created_at, editedAt:created.updated_at,
@@ -2173,7 +2184,7 @@ async function handleAction(e,el){
   if(a==="profileFriendsAll"){profileFriendsAll=true;return render();}
   if(a==="clearSearches"){state.searches=[];save();render();return;}
   if(a==="useSearch"){$("globalSearch").value=el.dataset.q;routeTo("search");return;}
-  if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes"){editingGroupId=id;return routeTo("groupView");}return toast("Résultat ouvert");}
+  if(a==="openSearchResult"){if(el.dataset.kind==="Personnes")return routeToProfile(id);if(el.dataset.kind==="Pages"){editingPageId=id;return routeTo("pageView");}if(el.dataset.kind==="Publications")return modal("Publication",renderPost(state.posts.find(p=>p.id===id)||{}));if(el.dataset.kind==="Groupes")return routeTo("groups");return toast("Résultat ouvert");}
   if(a==="markAllRead"){
     state.notifications.forEach(n=>{if(n.userId===state.current)n.read=true});
     if(supabaseReady()&&state.current){
@@ -2208,18 +2219,8 @@ async function handleAction(e,el){
   if(a==="voiceCall")return voiceCall(id);
   if(a==="voiceInvite")return toast("Message vocal simulé : connectez un backend/WebRTC pour la version réelle.");
   if(a==="createPage")return createPage();
-  if(a==="pageHubTab"){pageHubTab=el.dataset.tab||"discover";return render();}
-  if(a==="clearPageSearch"){window.pageSearch="";return render();}
   if(a==="viewPage"){editingPageId=id;return routeTo("pageView");}
-  if(a==="viewGroup"){editingGroupId=id;return routeTo("groupView");}
-  if(a==="openGroupComposer"){editingGroupId=id;return openComposer("post");}
-  if(a==="groupTab"){groupTab=el.dataset.tab||"discover";return render();}
-  if(a==="groupMore"){const g=findGroup(id);if(!g)return;return modal("Options du groupe",`<div class="premium-options"><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>↗</span><strong>Partager le lien</strong></button>${g.ownerId===state.current?`<button class="menu-card-premium" data-action="editGroup" data-id="${id}"><span>✎</span><strong>Modifier le groupe</strong></button>${(state.groupRequests||[]).filter(r=>r.groupId===id&&r.status==="pending").length?`<button class="menu-card-premium" data-action="groupRequests" data-id="${id}"><span>♧</span><strong>Demandes d'adhésion (${(state.groupRequests||[]).filter(r=>r.groupId===id&&r.status==="pending").length})</strong></button>`:""}`:""}</div>`);}
-  if(a==="groupRequests"){const g=findGroup(id);if(!g||g.ownerId!==state.current)return;const reqs=(state.groupRequests||[]).filter(r=>r.groupId===id&&r.status==="pending");return modal("Demandes d'adhésion",reqs.length?`<div class="group-members-list-v21">${reqs.map(r=>{const u=findUser(r.userId);return `<div class="group-member-row-v21"><span>${avatar(u||{} ,"avatar sm")}</span><span><b>${esc(displayName(u||{}))}</b><small>Demande d'adhésion</small></span><button class="btn primary" data-action="approveGroupJoin" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectGroupJoin" data-id="${r.id}">Refuser</button></div>`}).join("")}</div>`:`<div class="empty-state"><b>Aucune demande</b></div>`);}   if(a==="approveGroupJoin")return approveGroupJoin(id);   if(a==="rejectGroupJoin")return rejectGroupJoin(id);   if(a==="groupMembers"){const g=findGroup(id);if(!g)return;const ms=(g.members||[]).map(findUser).filter(Boolean);return modal("Membres",ms.length?`<div class="group-members-list-v21">${ms.map(u=>`<button class="group-member-row-v21" data-action="viewProfile" data-id="${u.id}">${avatar(u,"avatar sm")}<span><b>${esc(displayName(u))}</b><small>@${esc(u.username||"")}</small></span></button>`).join("")}</div>`:`<div class="empty-state"><b>Aucun membre</b></div>`);}
-  if(a==="groupAbout"){const g=findGroup(id);if(!g)return;return modal("À propos du groupe",`<div class="group-about-v21"><p>${esc(g.description||"Aucune description.")}</p><div><b>Catégorie</b><span>${esc(g.category||"Communauté")}</span></div><div><b>Confidentialité</b><span>${esc(g.privacy||"Public")}</span></div><div><b>Membres</b><span>${g.members?.length||0}</span></div><div><b>Créé le</b><span>${g.createdAt?new Date(g.createdAt).toLocaleDateString("fr-FR"):"—"}</span></div><div class="full"><b>Règles</b><span>${esc(g.rules||"Aucune règle renseignée.")}</span></div></div>`);}
-  if(a==="leaveGroup")return leaveGroup(id);
-
-  if(a==="pageMore"){const p=findPage(id);if(!p)return;const own=p.ownerId===state.current;return modal("Options de la Page",`<div class="premium-options">${own?`<button class="menu-card-premium" data-action="editPage" data-id="${id}"><span>✎</span><strong>Modifier la Page</strong></button><button class="menu-card-premium" data-action="switchPage" data-id="${id}"><span>▤</span><strong>Passer en mode Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`:`<button class="menu-card-premium" data-action="followPage" data-id="${id}"><span>＋</span><strong>${state.follows.some(f=>f.from===state.current&&f.to===id)?"Ne plus suivre":"Suivre"}</strong></button><button class="menu-card-premium" data-action="messagePage" data-id="${id}"><span>◈</span><strong>Message</strong></button><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler la Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`}</div>`);}
+  if(a==="pageMore"){const p=findPage(id);if(!p)return;const own=p.ownerId===state.current;return modal("Options de la Page",`<div class="premium-options">${own?`<button class="menu-card-premium" data-action="editPage" data-id="${id}"><span>✎</span><strong>Modifier la Page</strong></button><button class="menu-card-premium" data-action="switchPage" data-id="${id}"><span>▤</span><strong>Passer en mode Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`:`<button class="menu-card-premium" data-action="followPage" data-id="${id}"><span>＋</span><strong>${(state.pageFollows||[]).some(f=>f.pageId===id&&f.userId===state.current)?"Ne plus suivre":"Suivre"}</strong></button><button class="menu-card-premium" data-action="messagePage" data-id="${id}"><span>◈</span><strong>Message</strong></button><button class="menu-card-premium" data-action="reportProfile" data-id="${id}"><span>⚑</span><strong>Signaler la Page</strong></button><button class="menu-card-premium" data-action="shareLink" data-id="${id}"><span>🔗</span><strong>Copier le lien de la Page</strong></button>`}</div>`);}
   if(a==="pageModeHome"){pageTab="posts";return render();}
   if(a==="pageModeMessages"){return routeTo("messages");}
   if(a==="pageModeVideos"){pageTab="reels";return render();}
@@ -2231,6 +2232,10 @@ async function handleAction(e,el){
   if(a==="editPage")return editPage(id);
   if(a==="createGroup")return createGroup();
   if(a==="joinGroup")return joinGroup(id);
+  if(a==="viewGroup"){editingGroupId=id;return routeTo("groupView");}
+  if(a==="groupComposer")return groupComposer(id);
+  if(a==="approveGroupJoin")return approveGroupJoin(id);
+  if(a==="rejectGroupJoin")return rejectGroupJoin(id);
   if(a==="editProfile")return editProfile();
   if(a==="editCover")return editCover();
   if(a==="refreshProfile"){
@@ -2711,66 +2716,18 @@ async function createMarketplace(){
     }
   };
 }
-function readFileDataURL(file){
-  return new Promise((resolve,reject)=>{
-    if(!file)return resolve("");
-    const r=new FileReader(); r.onload=()=>resolve(String(r.result||"")); r.onerror=reject; r.readAsDataURL(file);
-  });
+async function createPage(){
+  modal("Créer une Page",`<form id="pageForm"><label>Nom de la Page<input id="pName" required></label><label>Catégorie<select id="pCat">${PAGE_CATS.map(x=>`<option>${x}</option>`).join("")}</select></label><label>Username<input id="pUser" required placeholder="ma_page"></label><label>Description<textarea id="pDesc"></textarea></label><label>E-mail<input id="pEmail" type="email"></label><label>Téléphone<input id="pPhone"></label><label>Site web<input id="pWeb"></label><label>Adresse<input id="pAddress"></label><label>Horaires<input id="pHours"></label><label>Services / produits<textarea id="pServices"></textarea></label><button class="btn primary wide">Créer la Page</button></form>`);
+  $("pageForm").onsubmit=async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('button[type="submit"]');try{btn.disabled=true;const payload={owner_id:state.current,name:$('pName').value.trim(),category:$('pCat').value,username:$('pUser').value.trim().toLowerCase(),description:$('pDesc').value.trim(),email:$('pEmail').value.trim()||null,phone:$('pPhone').value.trim()||null,website:$('pWeb').value.trim()||null,address:$('pAddress').value.trim()||null,hours:$('pHours').value.trim()||null,services:$('pServices').value.trim()||null};const {error}=await SB.from('pages').insert(payload);if(error)throw error;await loadSupabasePagesAndGroups();closeModal();routeTo('pages');toast('Page créée ✓');}catch(err){toast('Création impossible : '+(err.message||err));}finally{if(btn)btn.disabled=false;}};
 }
-function createPage(){
-  modal("Créer une Page",`<form id="pageForm" class="premium-form pages-complete-form">
-    <div class="media-form-grid"><label>Photo de profil<input id="pAvatarFile" type="file" accept="image/*"></label><label>Photo de couverture<input id="pCoverFile" type="file" accept="image/*"></label></div>
-    <label>Nom de la Page<input id="pName" required maxlength="80" placeholder="Nom de votre Page"></label>
-    <div class="form-row"><label>Catégorie<select id="pCat">${PAGE_CATS.map(x=>`<option>${x}</option>`).join("")}</select></label><label>Username<input id="pUser" required maxlength="40" placeholder="ma_page"></label></div>
-    <label>Description<textarea id="pDesc" maxlength="1000" placeholder="Présentez votre Page…"></textarea></label>
-    <div class="form-row"><label>E-mail<input id="pEmail" type="email"></label><label>Téléphone<input id="pPhone"></label></div>
-    <div class="form-row"><label>Site web<input id="pWeb" type="url" placeholder="https://…"></label><label>Adresse<input id="pAddress"></label></div>
-    <div class="form-row"><label>Horaires<input id="pHours" placeholder="Lun–Sam 08:00–18:00"></label><label>Services / produits<input id="pServices"></label></div>
-    <div class="field-help">La Page est séparée de votre compte personnel. Elle peut publier ses propres contenus.</div>
-    <button class="btn primary wide" type="submit">Créer la Page</button>
-  </form>`);
-  $("pageForm").onsubmit=async e=>{
-    e.preventDefault();
-    const name=$("pName").value.trim(), username=$("pUser").value.trim().replace(/^@/,'').replace(/\s+/g,'_');
-    if(!name||!username)return toast("Nom et username obligatoires.");
-    if((state.pages||[]).some(p=>String(p.username||'').toLowerCase()===username.toLowerCase()))return toast("Ce username de Page est déjà utilisé.");
-    const avatarData=await readFileDataURL($("pAvatarFile")?.files?.[0]);
-    const coverData=await readFileDataURL($("pCoverFile")?.files?.[0]);
-    const p={id:uid("page"),ownerId:state.current,name,category:$("pCat").value,username,description:$("pDesc").value.trim(),email:$("pEmail").value.trim(),phone:$("pPhone").value.trim(),website:$("pWeb").value.trim(),address:$("pAddress").value.trim(),hours:$("pHours").value.trim(),services:$("pServices").value.trim(),followers:0,verified:false,type:"page",avatar:avatarData,cover:coverData,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
-    state.pages.push(p); save(); closeModal(); editingPageId=p.id; render(); toast("Page créée ✓");
-  };
-}
-function editPage(id){
-  const p=findPage(id); if(!p||p.ownerId!==state.current)return toast("Vous n'êtes pas propriétaire de cette Page.");
-  modal("Modifier ma Page",`<form id="editPageForm" class="premium-form pages-complete-form">
-    <div class="media-form-grid"><label>Changer la photo<input id="epAvatarFile" type="file" accept="image/*"></label><label>Changer la couverture<input id="epCoverFile" type="file" accept="image/*"></label></div>
-    <label>Nom<input id="epName" value="${esc(p.name||"")}" required></label>
-    <div class="form-row"><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><label>Username<input id="epUser" value="${esc(p.username||"")}" required></label></div>
-    <label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label>
-    <div class="form-row"><label>E-mail<input id="epEmail" value="${esc(p.email||"")}" type="email"></label><label>Téléphone<input id="epPhone" value="${esc(p.phone||"")}"></label></div>
-    <div class="form-row"><label>Site web<input id="epWeb" value="${esc(p.website||"")}" type="url"></label><label>Adresse<input id="epAddress" value="${esc(p.address||"")}"></label></div>
-    <div class="form-row"><label>Horaires<input id="epHours" value="${esc(p.hours||"")}"></label><label>Services / produits<input id="epServices" value="${esc(p.services||"")}"></label></div>
-    <button class="btn primary wide" type="submit">Enregistrer les modifications</button>
-  </form>`);
-  $("editPageForm").onsubmit=async e=>{e.preventDefault(); const user=$("epUser").value.trim().replace(/^@/,'').replace(/\s+/g,'_'); if((state.pages||[]).some(x=>x.id!==id&&String(x.username||'').toLowerCase()===user.toLowerCase()))return toast("Ce username est déjà utilisé."); p.name=$("epName").value.trim();p.username=user;p.description=$("epDesc").value.trim();p.category=$("epCat").value;p.email=$("epEmail").value.trim();p.phone=$("epPhone").value.trim();p.website=$("epWeb").value.trim();p.address=$("epAddress").value.trim();p.hours=$("epHours").value.trim();p.services=$("epServices").value.trim(); const av=await readFileDataURL($("epAvatarFile")?.files?.[0]);const cv=await readFileDataURL($("epCoverFile")?.files?.[0]);if(av)p.avatar=av;if(cv)p.cover=cv;p.updatedAt=new Date().toISOString();save();closeModal();render();toast("Page mise à jour ✓");};
-}
-function createGroup(){
-  modal("Créer un groupe",`<form id="groupForm" class="premium-form pages-complete-form">
-    <div class="media-form-grid"><label>Image du groupe<input id="gCoverFile" type="file" accept="image/*"></label><label>Catégorie<input id="gCategory" maxlength="50" placeholder="Photo, sport, entraide…"></label></div>
-    <label>Nom<input id="gName" required maxlength="80" placeholder="Ex. Passion photo Madagascar"></label>
-    <label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label>
-    <label>Description<textarea id="gDesc" maxlength="1000" placeholder="Présentez votre communauté…"></textarea></label>
-    <label>Règles du groupe<textarea id="gRules" maxlength="1500" placeholder="Respect, contenu autorisé, modération…"></textarea></label>
-    <button class="btn primary wide" type="submit">Créer le groupe</button>
-  </form>`);
-  $("groupForm").onsubmit=async e=>{e.preventDefault();const name=$("gName").value.trim();if(!name)return;const cover=await readFileDataURL($("gCoverFile")?.files?.[0]);const now=new Date().toISOString();const g={id:uid("g"),name,privacy:$("gPrivacy").value,category:$("gCategory").value.trim(),description:$("gDesc").value.trim(),rules:$("gRules").value.trim(),members:[state.current],ownerId:state.current,admins:[state.current],cover,createdAt:now,updatedAt:now};state.groups.push(g);save();closeModal();editingGroupId=g.id;toast("Groupe créé ✓");routeTo("groupView");};
-}
-function editGroup(id){const g=findGroup(id);if(!g||g.ownerId!==state.current)return toast("Vous n'êtes pas administrateur de ce groupe.");modal("Modifier le groupe",`<form id="editGroupForm" class="premium-form pages-complete-form"><div class="media-form-grid"><label>Changer l'image<input id="egCoverFile" type="file" accept="image/*"></label><label>Catégorie<input id="egCategory" value="${esc(g.category||"")}"></label></div><label>Nom<input id="egName" value="${esc(g.name||"")}" required></label><label>Confidentialité<select id="egPrivacy"><option ${g.privacy==="Public"?"selected":""}>Public</option><option ${g.privacy==="Privé"?"selected":""}>Privé</option></select></label><label>Description<textarea id="egDesc">${esc(g.description||"")}</textarea></label><label>Règles<textarea id="egRules">${esc(g.rules||"")}</textarea></label><button class="btn primary wide">Enregistrer</button></form>`);$("editGroupForm").onsubmit=async e=>{e.preventDefault();g.name=$("egName").value.trim();g.privacy=$("egPrivacy").value;g.category=$("egCategory").value.trim();g.description=$("egDesc").value.trim();g.rules=$("egRules").value.trim();const cv=await readFileDataURL($("egCoverFile")?.files?.[0]);if(cv)g.cover=cv;g.updatedAt=new Date().toISOString();save();closeModal();render();toast("Groupe modifié ✓");};}
-function joinGroup(id){const g=findGroup(id);if(!g)return;if((g.members||[]).includes(state.current))return routeTo("groupView");if(g.privacy==="Privé")return requestGroupJoin(id);g.members=g.members||[];g.members.push(state.current);save();editingGroupId=id;toast("Vous avez rejoint le groupe ✓");return routeTo("groupView");}
-function requestGroupJoin(id){const g=findGroup(id);if(!g)return;state.groupRequests=state.groupRequests||[];if(state.groupRequests.some(r=>r.groupId===id&&r.userId===state.current&&r.status==="pending"))return toast("Votre demande est déjà en attente.");state.groupRequests.push({id:uid("grq"),groupId:id,userId:state.current,status:"pending",createdAt:new Date().toISOString()});notify(g.ownerId,"group",`${displayName(me())} demande à rejoindre le groupe « ${g.name} ».`);save();toast("Demande d'adhésion envoyée ✓");}
-function approveGroupJoin(reqId){const r=(state.groupRequests||[]).find(x=>x.id===reqId);if(!r)return;const g=findGroup(r.groupId);if(!g||g.ownerId!==state.current)return;g.members=g.members||[];if(!g.members.includes(r.userId))g.members.push(r.userId);r.status="accepted";notify(r.userId,"group",`Votre demande pour rejoindre « ${g.name} » a été acceptée.`);save();render();toast("Membre ajouté ✓");}
-function rejectGroupJoin(reqId){const r=(state.groupRequests||[]).find(x=>x.id===reqId);if(!r)return;const g=findGroup(r.groupId);if(!g||g.ownerId!==state.current)return;r.status="rejected";notify(r.userId,"group",`Votre demande pour rejoindre « ${g.name} » a été refusée.`);save();render();toast("Demande refusée");}
-function leaveGroup(id){const g=findGroup(id);if(!g||g.ownerId===state.current)return toast("Le propriétaire ne peut pas quitter son propre groupe.");g.members=(g.members||[]).filter(x=>x!==state.current);save();toast("Vous avez quitté le groupe");return routeTo("groups");}
+async function editPage(id){const p=findPage(id);if(!p)return;modal("Modifier ma Page",`<form id="editPageForm"><label>Nom<input id="epName" value="${esc(p.name)}"></label><label>Username<input id="epUser" value="${esc(p.username||'')}"></label><label>Description<textarea id="epDesc">${esc(p.description||"")}</textarea></label><label>Catégorie<select id="epCat">${PAGE_CATS.map(x=>`<option ${x===p.category?"selected":""}>${x}</option>`).join("")}</select></label><label>E-mail<input id="epEmail" value="${esc(p.email||'')}"></label><label>Téléphone<input id="epPhone" value="${esc(p.phone||'')}"></label><label>Site web<input id="epWeb" value="${esc(p.website||'')}"></label><label>Adresse<input id="epAddress" value="${esc(p.address||'')}"></label><label>Horaires<input id="epHours" value="${esc(p.hours||'')}"></label><label>Services / produits<textarea id="epServices">${esc(p.services||'')}</textarea></label><button class="btn primary wide">Enregistrer</button></form>`);$("editPageForm").onsubmit=async e=>{e.preventDefault();try{const {error}=await SB.from('pages').update({name:$('epName').value.trim(),username:$('epUser').value.trim().toLowerCase(),description:$('epDesc').value.trim(),category:$('epCat').value,email:$('epEmail').value.trim()||null,phone:$('epPhone').value.trim()||null,website:$('epWeb').value.trim()||null,address:$('epAddress').value.trim()||null,hours:$('epHours').value.trim()||null,services:$('epServices').value.trim()||null}).eq('id',id).eq('owner_id',state.current);if(error)throw error;await loadSupabasePagesAndGroups();closeModal();render();toast('Page mise à jour ✓');}catch(err){toast('Modification impossible : '+(err.message||err));}};}
+async function togglePageFollow(id){const p=findPage(id);if(!p||!state.current)return;try{const existing=(state.pageFollows||[]).find(f=>f.pageId===id);if(existing){const {error}=await SB.from('page_followers').delete().eq('page_id',id).eq('user_id',state.current);if(error)throw error;}else{const {error}=await SB.from('page_followers').insert({page_id:id,user_id:state.current});if(error)throw error;if(p.ownerId!==state.current) await SB.from('notifications').insert({user_id:p.ownerId,actor_id:state.current,type:'page_follow',message:`${displayName(me())} suit votre Page ${p.name}.`,is_read:false});}await loadSupabasePagesAndGroups();render();}catch(err){toast('Action impossible : '+(err.message||err));}}
+async function createGroup(){modal("Créer un groupe",`<form id="groupForm"><label>Nom<input id="gName" required></label><label>Catégorie<input id="gCategory" value="Général"></label><label>Confidentialité<select id="gPrivacy"><option>Public</option><option>Privé</option></select></label><label>Description<textarea id="gDesc"></textarea></label><label>Règles<textarea id="gRules"></textarea></label><button class="btn primary wide">Créer</button></form>`);$("groupForm").onsubmit=async e=>{e.preventDefault();const btn=e.currentTarget.querySelector('button[type="submit"]');try{btn.disabled=true;const {data,error}=await SB.from('groups').insert({owner_id:state.current,name:$('gName').value.trim(),category:$('gCategory').value.trim()||'Général',privacy:$('gPrivacy').value,description:$('gDesc').value.trim(),rules:$('gRules').value.trim()}).select('*').single();if(error)throw error;await SB.from('group_members').insert({group_id:data.id,user_id:state.current,role:'owner',status:'active'});await loadSupabasePagesAndGroups();closeModal();routeTo('groups');toast('Groupe créé ✓');}catch(err){toast('Création impossible : '+(err.message||err));}finally{btn.disabled=false;}};}
+async function joinGroup(id){const g=findGroup(id);if(!g)return;try{if(g.members.includes(state.current)){await SB.from('group_members').delete().eq('group_id',id).eq('user_id',state.current);toast('Vous avez quitté le groupe');}else if(g.privacy==='Public'){const {error}=await SB.from('group_members').upsert({group_id:id,user_id:state.current,role:'member',status:'active'},{onConflict:'group_id,user_id'});if(error)throw error;toast('Vous avez rejoint le groupe ✓');}else{const {error}=await SB.from('group_join_requests').upsert({group_id:id,user_id:state.current,status:'pending'},{onConflict:'group_id,user_id'});if(error)throw error;toast('Demande envoyée ✓');}await loadSupabasePagesAndGroups();render();}catch(err){toast('Action impossible : '+(err.message||err));}}
+async function approveGroupJoin(id){try{const {data,error}=await SB.from('group_join_requests').update({status:'accepted',updated_at:new Date().toISOString()}).eq('id',id).select('*').single();if(error)throw error;await SB.from('group_members').upsert({group_id:data.group_id,user_id:data.user_id,role:'member',status:'active'},{onConflict:'group_id,user_id'});await loadSupabasePagesAndGroups();render();toast('Demande acceptée ✓');}catch(err){toast('Action impossible : '+(err.message||err));}}
+async function rejectGroupJoin(id){try{const {error}=await SB.from('group_join_requests').update({status:'rejected',updated_at:new Date().toISOString()}).eq('id',id);if(error)throw error;await loadSupabasePagesAndGroups();render();toast('Demande refusée');}catch(err){toast('Action impossible : '+(err.message||err));}}
+function groupComposer(id){const g=findGroup(id);if(!g||!g.members.includes(state.current))return toast('Vous devez être membre du groupe.');openComposer('post');setTimeout(()=>{const f=$('composerForm');if(f)f.dataset.groupId=id;},0);}
+
 async function changePassword(){
   modal("Mot de passe",`<form id="passwordChangeForm" class="premium-form"><div class="form-note-v91">Votre mot de passe est géré directement par Supabase Auth. Il n'est jamais enregistré dans le navigateur.</div><label>Mot de passe actuel<input id="oldPass" type="password" autocomplete="current-password" required></label><label>Nouveau mot de passe<input id="newPass" type="password" autocomplete="new-password" minlength="6" required></label><label>Confirmer le nouveau mot de passe<input id="newPass2" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary wide">Enregistrer le nouveau mot de passe</button></form>`);
   $("passwordChangeForm").onsubmit=async e=>{
