@@ -1059,6 +1059,7 @@ let registerAvatar = "";
 let profileFriendsAll = false;
 let committedSearchQuery = "";
 let editingPageId = null;
+let editingGroupId = null;
 let profileTab = "posts";
 let profileViewingId = null;
 let pageTab = "posts";
@@ -1697,11 +1698,48 @@ function renderGroups(){
   <div class="hub-grid-v90">${gs.map(g=>{const member=Array.isArray(g.members)&&g.members.includes(state.current), own=g.ownerId===state.current, pending=(g.joinRequests||[]).some(r=>r.user_id===state.current&&r.status==='pending'); const isPrivate=String(g.privacy||'Public')==='Privé'; return `<article class="hub-card-v90"><div class="hub-card-icon">◉</div><div class="hub-card-body"><span class="type-pill">${esc(isPrivate?'Privé':'Public')}</span><h2>${esc(g.name)}</h2><p>${esc(g.description||'Communauté Tafaß')}</p><div class="hub-stats-v90"><span>${g.memberCount||g.members.length} membres</span><span>${esc(g.category||'Général')}</span></div><button type="button" class="btn secondary wide" data-action="viewGroup" data-id="${g.id}">Voir le groupe</button>${own?`<button type="button" class="btn secondary wide" disabled>Administrateur</button>`:member?`<button type="button" class="btn danger wide" data-action="joinGroup" data-id="${g.id}">Quitter</button>`:isPrivate?(pending?`<button type="button" class="btn secondary wide" disabled>Demande en attente</button>`:`<button type="button" class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`):`<button type="button" class="btn primary wide" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></article>`}).join('')||`<div class="empty-state"><b>Aucun groupe</b><span>Créez votre première communauté.</span></div>`}</div></section>`;
 }
 function renderGroupView(id){
-  const g=findGroup(id); if(!g)return `<div class="empty">Groupe introuvable.</div>`;
-  const member=g.members.includes(state.current), own=g.ownerId===state.current;
+  const g=findGroup(id);
+  if(!g) return `${routeBackBar("Groupes","groups")}<div class="empty-state"><b>Groupe introuvable</b><span>Ce groupe n'est plus disponible.</span></div>`;
+  const members=Array.isArray(g.memberRows)?g.memberRows.filter(m=>m.status==='active'):[];
+  const member=Array.isArray(g.members)&&g.members.includes(state.current);
+  const own=g.ownerId===state.current;
+  const pending=(g.joinRequests||[]).some(r=>r.user_id===state.current&&r.status==='pending');
   const posts=state.posts.filter(p=>p.groupId===g.id&&canSeePost(p));
-  const requests=(g.joinRequests||[]).filter(r=>r.status==='pending' && (own||r.user_id===state.current));
-  return `${routeBackBar('Groupes','groups')}<section class="page-view-v90"><div class="page-cover-v90"><div class="cover-shade"></div></div><div class="page-identity-v90"><div class="page-avatar-v90">◉</div><div class="page-title-v90"><span class="type-pill">GROUPE · ${esc(g.privacy)}</span><h1>${esc(g.name)}</h1><p>${esc(g.description||'')}</p><strong>${g.memberCount||g.members.length} membres · ${esc(g.category||'Général')}</strong></div><div class="page-actions-v90">${own?`<button type="button" class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button>`:member?`<button type="button" class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button><button type="button" class="btn danger" data-action="joinGroup" data-id="${g.id}">Quitter</button>`:g.privacy==='Privé'?`<button type="button" class="btn primary" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`:`<button type="button" class="btn primary" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}</div></div><nav class="profile-tabs-premium"><button class="active">Publications</button><button>À propos</button><button>Membres</button></nav><div class="saved-stack-v90">${own&&requests.length?`<div class="card"><h3>Demandes d'adhésion</h3>${requests.map(r=>`<div class="list-item"><span>${esc(displayName(findUser(r.user_id)||{name:'Utilisateur'}))}</span><div><button class="btn primary" data-action="approveGroupJoin" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectGroupJoin" data-id="${r.id}">Refuser</button></div></div>`).join('')}</div>`:''}${posts.length?posts.map(renderPost).join(''):`<div class="empty-state"><b>Aucune publication</b><span>Les publications du groupe apparaîtront ici.</span></div>`}</div></section>`;
+  const requests=(g.joinRequests||[]).filter(r=>r.status==='pending' && own);
+  const privacy=String(g.privacy||'Public').toLowerCase()==='privé'?'Privé':'Public';
+  const canPublish=own||member;
+  return `${routeBackBar('Groupes','groups')}
+  <section class="page-view-v90 group-full-view-v26">
+    <div class="page-cover-v90 group-cover-v26"><div class="cover-shade"></div></div>
+    <div class="page-identity-v90 group-identity-v26">
+      <div class="page-avatar-v90">◉</div>
+      <div class="page-title-v90">
+        <span class="type-pill">GROUPE · ${esc(privacy)}</span>
+        <h1>${esc(g.name)}</h1>
+        <p>${esc(g.description||'Communauté Tafaß')}</p>
+        <strong>${g.memberCount||members.length||g.members.length} membres · ${esc(g.category||'Général')}</strong>
+      </div>
+      <div class="page-actions-v90">
+        ${own
+          ? `<button type="button" class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button>`
+          : member
+            ? `<button type="button" class="btn primary" data-action="groupComposer" data-id="${g.id}">＋ Publier</button><button type="button" class="btn danger" data-action="joinGroup" data-id="${g.id}">Quitter</button>`
+            : privacy==='Privé'
+              ? (pending?`<button type="button" class="btn secondary" disabled>Demande en attente</button>`:`<button type="button" class="btn primary" data-action="joinGroup" data-id="${g.id}">Demander à rejoindre</button>`)
+              : `<button type="button" class="btn primary" data-action="joinGroup" data-id="${g.id}">Rejoindre</button>`}
+      </div>
+    </div>
+    <nav class="profile-tabs-premium group-tabs-v26">
+      <button class="active" type="button">Publications</button>
+      <button type="button" data-action="groupAbout" data-id="${g.id}">À propos</button>
+      <button type="button" data-action="groupMembers" data-id="${g.id}">Membres</button>
+    </nav>
+    <div class="saved-stack-v90">
+      ${canPublish?`<div class="card group-composer-entry-v26"><div><b>Partager dans ${esc(g.name)}</b><small>Publiez un texte, une photo ou une vidéo pour les membres du groupe.</small></div><button class="btn primary" type="button" data-action="groupComposer" data-id="${g.id}">Créer une publication</button></div>`:''}
+      ${own&&requests.length?`<div class="card"><h3>Demandes d'adhésion</h3>${requests.map(r=>`<div class="list-item"><span>${esc(displayName(findUser(r.user_id)||{name:'Utilisateur'}))}</span><div><button class="btn primary" data-action="approveGroupJoin" data-id="${r.id}">Accepter</button><button class="btn secondary" data-action="rejectGroupJoin" data-id="${r.id}">Refuser</button></div></div>`).join('')}</div>`:''}
+      ${posts.length?posts.map(renderPost).join(''):`<div class="empty-state"><b>Aucune publication</b><span>${canPublish?'Commencez la conversation avec une première publication.':'Les publications du groupe apparaîtront ici.'}</span></div>`}
+    </div>
+  </section>`;
 }
 
 function renderMedia(type){
@@ -2255,7 +2293,21 @@ async function handleAction(e,el){
   if(a==="editPage")return editPage(id);
   if(a==="createGroup")return createGroup();
   if(a==="joinGroup")return joinGroup(id);
-  if(a==="viewGroup"){editingGroupId=id;return routeTo("groupView");}
+  if(a==="viewGroup"){
+    const g=findGroup(id);
+    if(!g) return toast("Groupe introuvable.");
+    editingGroupId=id;
+    return routeTo("groupView");
+  }
+  if(a==="groupAbout"){
+    const g=findGroup(id); if(!g)return toast("Groupe introuvable.");
+    return modal(`À propos · ${g.name}`,`<div class="group-about-v26"><h3>${esc(g.name)}</h3><p>${esc(g.description||"Aucune description.")}</p><p><b>Confidentialité :</b> ${esc(g.privacy||"Public")}</p><p><b>Catégorie :</b> ${esc(g.category||"Général")}</p>${g.rules?`<p><b>Règles :</b><br>${esc(g.rules)}</p>`:""}</div>`);
+  }
+  if(a==="groupMembers"){
+    const g=findGroup(id); if(!g)return toast("Groupe introuvable.");
+    const rows=(g.memberRows||[]).filter(m=>m.status==='active');
+    return modal(`Membres · ${g.name}`,`<div class="group-members-v26">${rows.map(m=>{const u=findUser(m.user_id)||{name:"Utilisateur"};return `<div class="list-item">${avatar(u,"avatar sm")}<div class="list-main"><b>${esc(displayName(u))}</b><small>${esc(m.role||"member")}</small></div></div>`}).join("")||`<div class="empty-state"><b>Aucun membre</b></div>`}</div>`);
+  }
   if(a==="groupComposer")return groupComposer(id);
   if(a==="approveGroupJoin")return approveGroupJoin(id);
   if(a==="rejectGroupJoin")return rejectGroupJoin(id);
