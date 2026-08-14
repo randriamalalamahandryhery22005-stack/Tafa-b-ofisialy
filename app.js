@@ -1,25 +1,4 @@
 
-/* TAFA_GROUP_OPEN_CLICK_FIX */
-document.addEventListener("click", function(e){
-  const el=e.target.closest?.(
-    '[data-action="view-group"],[data-action="open-group"],[data-group-id][data-action="view"],[data-group-id][data-route="group"],[data-group-id][data-page="group"],[data-group-open]'
-  );
-  if(!el) return;
-  const gid=el.getAttribute("data-group-id") || el.getAttribute("data-id");
-  if(!gid) return;
-  e.preventDefault();
-  e.stopPropagation();
-  try{
-    if(typeof openGroup==="function"){ openGroup(gid); return; }
-    if(typeof navigateToGroup==="function"){ navigateToGroup(gid); return; }
-    route="group";
-    state.selectedGroupId=gid;
-    state.currentGroupId=gid;
-    if(typeof render==="function") render();
-    else if(typeof renderApp==="function") renderApp();
-  }catch(err){ console.error("Group navigation error:",err); }
-}, true);
-
 
 /* GROUP SEARCH */
 document.addEventListener("input",function(e){if(e.target?.id==="groupSearchInput"){window.groupSearch=e.target.value||"";render();}});
@@ -3623,25 +3602,27 @@ async function joinGroup(id){try{await joinSupabaseGroup(id);}catch(e){toast("Im
 async function leaveGroup(id){try{await leaveSupabaseGroup(id);}catch(e){toast("Impossible : "+(e?.message||"erreur"));}}
 function viewGroup(id){
   const gid=String(id||"").trim();
-  if(!gid)return toast("Groupe introuvable.");
-  const g=(state.groups||[]).find(x=>String(x.id)===gid);
-  if(!g){
-    // Refresh groups once from Supabase before declaring the group missing.
-    if(supabaseReady()){
-      loadSupabaseGroups().then(()=>{
-        const fresh=(state.groups||[]).find(x=>String(x.id)===gid);
-        if(!fresh)return toast("Groupe introuvable.");
-        selectedGroupId=gid;
-        route="groupView";
-        render();
-      }).catch(err=>toast(err?.message||"Impossible de charger le groupe."));
-      return;
-    }
-    return toast("Groupe introuvable.");
+  if(!gid){ toast("Groupe introuvable."); return; }
+
+  const open=()=>{
+    const g=(state.groups||[]).find(x=>String(x.id)===gid);
+    if(!g){ toast("Groupe introuvable."); return; }
+    selectedGroupId=gid;
+    route="groupView";
+    render();
+  };
+
+  const loaded=(state.groups||[]).some(x=>String(x.id)===gid);
+  if(loaded){ open(); return; }
+
+  if(supabaseReady() && typeof loadSupabaseGroups==="function"){
+    loadSupabaseGroups().then(open).catch(err=>{
+      console.error("Chargement groupe:",err);
+      toast("Impossible de charger le groupe.");
+    });
+    return;
   }
-  selectedGroupId=gid;
-  route="groupView";
-  render();
+  toast("Impossible de charger le groupe.");
 }
 function manageGroup(id){
   const g=(state.groups||[]).find(x=>String(x.id)===String(id));
@@ -4141,7 +4122,7 @@ document.addEventListener("click",async e=>{
   const join=e.target.closest?.('[data-action="join-group"]');
   if(join){e.preventDefault(); await joinGroup(join.dataset.groupId); return;}
   const view=e.target.closest?.('[data-action="viewGroup"]');
-  if(view){e.preventDefault(); viewGroup(view.dataset.id); return;}
+  if(view){e.preventDefault(); viewGroup(view.dataset.groupId || view.dataset.id); return;}
   const leave=e.target.closest?.('[data-action="leave-group"]');
   if(leave){e.preventDefault(); await leaveGroup(leave.dataset.groupId); return;}
   const publish=e.target.closest?.('[data-group-publish]');
@@ -4287,13 +4268,3 @@ document.addEventListener('click', async (event) => {
 });
 
 
-/* TAFA_GROUP_VIEW_CAPTURE_FIX */
-document.addEventListener("click", function(e){
-  const el=e.target.closest?.('[data-action="viewGroup"], [data-action="view-group"], [data-group-open]');
-  if(!el) return;
-  const gid=el.getAttribute("data-group-id") || el.getAttribute("data-id");
-  if(!gid) return;
-  e.preventDefault();
-  e.stopImmediatePropagation();
-  viewGroup(gid);
-}, true);
